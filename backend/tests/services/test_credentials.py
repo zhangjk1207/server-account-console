@@ -16,7 +16,7 @@ def test_credential_cipher_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_credential_cipher_requires_a_configured_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "")
     get_settings.cache_clear()
     try:
         with pytest.raises(CredentialConfigurationError, match="未配置凭证加密主密钥"):
