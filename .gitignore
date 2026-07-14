@@ -6,6 +6,7 @@ secrets/
 keys/
 
 # Runtime data and logs
+runtime/
 data/
 logs/
 ansible-artifacts/
