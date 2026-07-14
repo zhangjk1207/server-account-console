@@ -114,3 +114,27 @@ def test_password_reset_execution_requires_one_time_password() -> None:
             assert response.json()["detail"] == "重置密码需要输入新密码"
 
     asyncio.run(scenario())
+
+
+def test_sshd_password_login_preview_rejects_unverified_host() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            host = await client.post(
+                "/api/hosts",
+                json={"name": "sshd-host", "address": "192.0.2.10", "port": 22, "ssh_user": "ops", "tags": []},
+                headers={"X-CSRF-Token": token},
+            )
+
+            response = await client.post(
+                f"/api/hosts/{host.json()['id']}/ssh-password-authentication/preview",
+                json={"enabled": False},
+                headers={"X-CSRF-Token": token},
+            )
+
+            assert response.status_code == 422
+            assert response.json()["detail"] == "连接凭证尚未通过 SSH 和 sudo 验证"
+
+    asyncio.run(scenario())

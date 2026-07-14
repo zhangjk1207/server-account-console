@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Host, HostCredential, Job, JobTarget, ManagedUser, SshPublicKey
 from app.db.session import SessionLocal
-from app.schemas.host_operation import HostAuthorizedKeyRead, HostUserOperation, HostUserRead
+from app.schemas.host_operation import HostAuthorizedKeyRead, SshPasswordAuthenticationPreview, SshPasswordAuthenticationRead, HostUserOperation, HostUserRead
 from app.services.host_connections import decrypt_host_credential
 from app.services.hosts import _scan_ed25519_key
 from app.services.jobs import (
@@ -71,20 +71,47 @@ def require_verified_host_credential(session: Session, host: Host) -> HostCreden
 
 
 def create_host_operation_preview(session: Session, host: Host, operation: HostUserOperation) -> Job:
+    operation = expand_managed_person(session, operation)
+    return _create_operation_job(session, host, "host_user_operation", operation.model_dump(exclude_none=True))
+
+
+def _create_operation_job(session: Session, host: Host, kind: str, operation: dict) -> Job:
     require_verified_host_credential(session, host)
     if host.status != "reachable":
         raise JobStateError("机器当前不可连接")
-    operation = expand_managed_person(session, operation)
     request_snapshot = {
         "host_ids": [host.id],
         "hosts": [{"id": host.id, "name": host.name, "address": host.address, "port": host.port, "ssh_user": host.ssh_user, "fingerprint": host.host_key_fingerprint}],
-        "operation": operation.model_dump(exclude_none=True),
+        "operation": operation,
     }
-    job = Job(kind="host_user_operation", state="pending", user_snapshot={}, request_snapshot=request_snapshot, script_snapshot=None)
+    job = Job(kind=kind, state="pending", user_snapshot={}, request_snapshot=request_snapshot, script_snapshot=None)
     session.add(job)
     session.flush()
     session.add(JobTarget(job_id=job.id, host_id=host.id, state="pending"))
     session.commit()
+    session.refresh(job)
+    return job
+
+
+def create_ssh_password_authentication_preview(
+    session: Session,
+    host: Host,
+    payload: SshPasswordAuthenticationPreview,
+) -> Job:
+    if not RUNNER_LOCK.acquire(blocking=False):
+        raise JobStateError("已有任务正在运行")
+    try:
+        job = _create_operation_job(
+            session,
+            host,
+            "ssh_password_authentication",
+            {"action": "sshd_password_authentication", "enabled": payload.enabled},
+        )
+        _set_started(session, job, check=True)
+    except Exception:
+        RUNNER_LOCK.release()
+        raise
+    _launch_operation_worker(job.id, True)
     session.refresh(job)
     return job
 
@@ -170,6 +197,29 @@ def _run_key_inventory(session: Session, host: Host, username: str):
     return _run_inspection(session, host, {"action": "inspect_keys", "username": username})
 
 
+def get_ssh_password_authentication(session: Session, host: Host) -> SshPasswordAuthenticationRead:
+    require_verified_host_credential(session, host)
+    if not RUNNER_LOCK.acquire(blocking=False):
+        raise JobStateError("已有任务正在运行")
+    try:
+        result = _run_sshd_inspection(session, host)
+    finally:
+        RUNNER_LOCK.release()
+    if result.rc != 0:
+        raise JobStateError("读取 SSH 密码登录状态失败")
+    for event in reversed(result.events):
+        data = event.get("event_data") if isinstance(event.get("event_data"), dict) else {}
+        result_data = data.get("res") if isinstance(data.get("res"), dict) else {}
+        message = result_data.get("msg")
+        if isinstance(message, dict) and isinstance(message.get("password_authentication"), bool):
+            return SshPasswordAuthenticationRead(enabled=message["password_authentication"])
+    raise JobStateError("SSH 密码登录状态结果无效")
+
+
+def _run_sshd_inspection(session: Session, host: Host):
+    return _run_inspection(session, host, {"action": "inspect_sshd"})
+
+
 def _run_inspection(session: Session, host: Host, operation: dict):
     with tempfile.TemporaryDirectory(prefix="host-inventory-") as temporary_directory:
         artifact = Path(temporary_directory)
@@ -234,8 +284,8 @@ def create_and_start_host_operation(session: Session, host: Host, operation: Hos
 
 
 def execute_host_operation(session: Session, job: Job, *, new_password: str | None = None) -> Job:
-    if job.kind != "host_user_operation":
-        raise JobStateError("任务不是主机用户运维任务")
+    if job.kind not in {"host_user_operation", "ssh_password_authentication"}:
+        raise JobStateError("任务不是受控主机运维任务")
     operation = job.request_snapshot.get("operation")
     if not isinstance(operation, dict):
         raise JobStateError("任务操作参数无效")
