@@ -4,10 +4,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import require_admin, require_csrf
-from app.db.models import Host, Job, JobTarget
+from app.db.models import Host, HostCredential, Job, JobTarget
 from app.db.session import get_db_session
 from app.schemas.host import FingerprintConfirmation, HostCreate, HostProbeRead, HostRead, HostUpdate
 from app.services.hosts import _scan_ed25519_key, apply_probe_result, create_host, get_active_host, probe_host, update_host
+from app.services.host_connections import apply_credential_probe, test_host_credential
 
 router = APIRouter(prefix="/hosts", tags=["hosts"], dependencies=[Depends(require_admin)])
 
@@ -82,7 +83,10 @@ def confirm_fingerprint(host_id: str, payload: FingerprintConfirmation, session:
         session.commit()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="主机指纹已变化，请重新测试连接")
     host.host_key_fingerprint = payload.fingerprint
-    apply_probe_result(host, probe_host(host))
+    if session.query(HostCredential).filter(HostCredential.host_id == host.id).one_or_none() is not None:
+        apply_credential_probe(session, host, test_host_credential(session, host))
+    else:
+        apply_probe_result(host, probe_host(host))
     session.commit()
     session.refresh(host)
     return host

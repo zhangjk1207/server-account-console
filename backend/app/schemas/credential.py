@@ -10,3 +10,12 @@ class HostCredentialStatus(BaseModel):
     ssh_verified: bool | None
     sudo_verified: bool | None
     last_error: str | None
+
+
+class HostCredentialProbe(BaseModel):
+    fingerprint: str | None
+    requires_confirmation: bool
+    ssh_ok: bool | None
+    sudo_ok: bool | None
+    error: str | None
+    latency_ms: int | None

@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 from app.core.security import require_admin, require_csrf
 from app.db.models import Host, HostCredential
 from app.db.session import get_db_session
-from app.schemas.credential import HostCredentialStatus
+from app.schemas.credential import HostCredentialProbe, HostCredentialStatus
 from app.services.credentials import CredentialCipher, CredentialConfigurationError, validate_private_key
+from app.services.host_connections import apply_credential_probe, test_host_credential
 
 
 router = APIRouter(prefix="/hosts", tags=["host-credentials"], dependencies=[Depends(require_admin)])
@@ -76,3 +77,15 @@ def delete_credentials(host_id: str, session: Session = Depends(get_db_session))
     if credential is not None:
         session.delete(credential)
         session.commit()
+
+
+@router.post("/{host_id}/credentials/test", response_model=HostCredentialProbe, dependencies=[Depends(require_csrf)])
+def test_credentials(host_id: str, session: Session = Depends(get_db_session)) -> HostCredentialProbe:
+    host = require_host(session, host_id)
+    try:
+        result = test_host_credential(session, host)
+    except (CredentialConfigurationError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    apply_credential_probe(session, host, result)
+    session.commit()
+    return HostCredentialProbe(**result.__dict__)

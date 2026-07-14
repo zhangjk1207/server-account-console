@@ -26,3 +26,12 @@ def test_redacts_nested_runner_result_values() -> None:
 
     assert "/run/secrets/control_ssh_key" not in json.dumps(redacted)
     assert "RSA PRIVATE KEY" not in json.dumps(redacted)
+
+
+def test_redacts_configured_sensitive_values_recursively() -> None:
+    event = {"stdout": "sudo-secret", "event_data": {"res": {"stderr": "password=sudo-secret"}}}
+
+    redacted = redact_event(event, Path("/tmp/host-key"), sensitive_values=["sudo-secret"])
+
+    assert "sudo-secret" not in json.dumps(redacted)
+    assert "[REDACTED_SECRET]" in json.dumps(redacted)

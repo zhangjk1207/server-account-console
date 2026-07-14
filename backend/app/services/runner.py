@@ -16,6 +16,7 @@ class RunnerRequest:
     inventory: dict
     extravars: dict
     check: bool
+    sensitive_values: tuple[str, ...] = ()
     timeout: int = 1200
     forks: int = 5
 
@@ -27,10 +28,13 @@ class RunnerResult:
     events: list[dict]
 
 
-def redact_event(event: dict, key_path: Path) -> dict:
+def redact_event(event: dict, key_path: Path, *, sensitive_values: list[str] | tuple[str, ...] = ()) -> dict:
     def redact(value):
         if isinstance(value, str):
             value = value.replace(str(key_path), "[REDACTED_KEY_PATH]")
+            for secret in sensitive_values:
+                if secret:
+                    value = value.replace(secret, "[REDACTED_SECRET]")
             return PRIVATE_KEY_BLOCK.sub("[REDACTED_PRIVATE_KEY]", value)
         if isinstance(value, dict):
             return {key: redact(item) for key, item in value.items()}
@@ -45,7 +49,7 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
     events: list[dict] = []
 
     def handle_event(event: dict) -> bool:
-        safe_event = redact_event(event, key_path)
+        safe_event = redact_event(event, key_path, sensitive_values=request.sensitive_values)
         events.append(safe_event)
         on_event(safe_event)
         return True

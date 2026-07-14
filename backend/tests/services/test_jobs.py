@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.db.models import Host, Job, JobTarget, ManagedUser
+from app.db.models import Host, HostCredential, Job, JobTarget, ManagedUser, SshPublicKey
 from app.db.session import SessionLocal
 from app.services import jobs
 from app.services.jobs import (
@@ -117,3 +117,19 @@ def test_lock_conflict_does_not_create_an_orphan_preview() -> None:
             assert list(session.scalars(select(Job))) == []
     finally:
         jobs.RUNNER_LOCK.release()
+
+
+def test_sync_requires_host_credential_with_verified_ssh_and_sudo() -> None:
+    with SessionLocal() as session:
+        host = Host(name="lab-01", address="192.0.2.10", status="reachable")
+        user = ManagedUser(username="alice", home="/home/alice")
+        session.add_all([host, user])
+        session.flush()
+        session.add_all([
+            SshPublicKey(managed_user_id=user.id, public_key="ssh-ed25519 AAAA managed", fingerprint="SHA256:managed", comment="managed"),
+            HostCredential(host_id=host.id, private_key_ciphertext="cipher", sudo_password_ciphertext="cipher", ssh_verified=True, sudo_verified=False),
+        ])
+        session.commit()
+
+        with pytest.raises(JobStateError, match="连接凭证尚未通过 SSH 和 sudo 验证"):
+            jobs.create_job(session, user, [host], None)
