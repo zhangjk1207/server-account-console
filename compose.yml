@@ -7,6 +7,7 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
       SESSION_SECRET: ${SESSION_SECRET}
       APP_ORIGIN: ${APP_ORIGIN}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
     volumes:
       - ./runtime:/var/lib/server-account-console
       - ${SSH_KEY_PATH}:${CONTROL_SSH_KEY_PATH}:ro

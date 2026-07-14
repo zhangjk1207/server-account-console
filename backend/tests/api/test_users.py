@@ -45,3 +45,25 @@ def test_adds_public_key_and_rejects_duplicate_fingerprint() -> None:
             await client.aclose()
 
     asyncio.run(scenario())
+
+
+def test_user_keeps_declared_directories_and_symlinks() -> None:
+    async def scenario() -> None:
+        client, token = await authenticated_client()
+        try:
+            response = await client.post(
+                "/api/users",
+                json={
+                    "username": "alice",
+                    "directories": [{"path": "/srv/alice", "mode": "0750"}],
+                    "symlinks": [{"path": "/home/alice/work", "target": "/srv/alice"}],
+                },
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 201
+            assert response.json()["directories"] == [{"path": "/srv/alice", "mode": "0750"}]
+            assert response.json()["symlinks"] == [{"path": "/home/alice/work", "target": "/srv/alice"}]
+        finally:
+            await client.aclose()
+
+    asyncio.run(scenario())

@@ -10,7 +10,9 @@
 
 ## 开发环境
 
-后端要求 Python 3.13，前端要求 Node.js 22。复制 `.env.example` 到 `.env` 后，设置管理员密码哈希、随机会话密钥和控制 SSH 私钥路径。运行 `docker compose up --build` 后，从 `http://localhost:8080` 访问控制台。
+后端要求 Python 3.13，前端要求 Node.js 22。复制 `.env.example` 到 `.env` 后，设置管理员密码哈希、随机会话密钥和控制 SSH 私钥路径。
+
+本地试运行不需要容器：先在 `backend/` 执行 `../.venv/bin/alembic upgrade head && ../.venv/bin/uvicorn app.main:app --reload --port 8000`，再在 `frontend/` 执行 `npm run dev`。详细接入和运维说明见 [部署文档](docs/deployment.md)。内网部署可使用 `docker compose up --build`，再访问 `http://localhost:8080`。
 
 ## 计划技术栈
 

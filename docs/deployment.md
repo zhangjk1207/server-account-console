@@ -19,6 +19,6 @@
 2. 仅允许内网或 VPN 网段访问反向代理；生产环境通过反向代理启用 TLS。
 3. 执行 `docker compose up -d --build`。API 容器在启动时自动执行数据库迁移。
 4. 首次访问时，在机器页面逐台测试 SSH 并确认主机指纹；未确认或指纹变化的机器不能成为同步目标。
-5. 每日执行 `scripts/backup.sh`，备份保留 14 天。恢复时停止服务并以备份文件替换 `runtime/app.db`。
+5. API 默认每 24 小时创建一次 SQLite 在线备份，保留 14 天；可通过 `BACKUP_INTERVAL_SECONDS` 调整周期。也可执行 `DATABASE_PATH=./runtime/app.db scripts/backup.sh` 立即创建备份。恢复时停止服务并以备份文件替换 `runtime/app.db`。
 
 控制私钥、`.env`、运行数据、Ansible 产物和备份均被 Git 忽略，不得提交。

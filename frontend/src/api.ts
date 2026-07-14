@@ -1,6 +1,8 @@
 export type Host = { id:string; name:string; address:string; port:number; ssh_user:string; tags:string[]; status:string; last_probe_error?:string|null; last_probe_latency_ms?:number|null };
 export type User = { id:string; username:string; display_name:string; shell:string; home:string; enabled:boolean };
 export type Script = { id:string; name:string; description:string; version:number; enabled:boolean; body:string };
+export type SshKey = { id:string; managed_user_id:string; public_key:string; fingerprint:string; comment:string; enabled:boolean };
+export type HostUserState = { host_id:string; host_name:string; status:string; synced_at:string|null; desired_hash:string|null };
 export type JobTarget = { host_id:string; host_name:string; state:string; output:string; error:string|null; started_at:string|null; finished_at:string|null };
 export type JobEvent = { id:string; job_id:string; host_id:string|null; level:string; message:string; created_at:string };
 export type Job = {

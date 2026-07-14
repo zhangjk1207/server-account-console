@@ -65,6 +65,8 @@ def create_job(session: Session, user: ManagedUser, hosts: list[Host], script: S
         "shell": user.shell,
         "home": user.home,
         "sudo_rule": user.sudo_rule,
+        "directories": user.directories,
+        "symlinks": user.symlinks,
         "public_keys": [key.public_key for key in keys],
     }
     request_snapshot = {
@@ -253,11 +255,15 @@ def _mark_target_failure(session: Session, job: Job, host_id: str, message: str)
     session.add(JobEvent(job_id=job.id, host_id=host_id, level="error", message=message))
 
 
-def _finish_pending_targets(session: Session, job: Job) -> list[JobTarget]:
+def _finish_pending_targets(session: Session, job: Job, *, failure_message: str | None = None) -> list[JobTarget]:
     targets = list(session.scalars(select(JobTarget).where(JobTarget.job_id == job.id)))
     for target in targets:
         if target.state in {"pending", "running"}:
-            target.state = "succeeded"
+            target.state = "failed" if failure_message else "succeeded"
+            if failure_message:
+                target.error = failure_message
+                _append_output(target, failure_message)
+                session.add(JobEvent(job_id=job.id, host_id=target.host_id, level="error", message=failure_message))
             target.finished_at = utc_now()
     return targets
 
@@ -334,7 +340,8 @@ def _run_job(session: Session, job: Job, check: bool) -> Job:
         event_handler,
         Path(get_settings().control_ssh_key_path),
     )
-    targets = _finish_pending_targets(session, job)
+    failure_message = "Ansible 以非零状态退出，未收到该机器的具体失败事件" if result.rc != 0 else None
+    targets = _finish_pending_targets(session, job, failure_message=failure_message)
     failed = any(target.state == "failed" for target in targets)
     job.finished_at = utc_now()
     if check:

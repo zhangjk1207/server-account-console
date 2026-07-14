@@ -4,6 +4,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 USERNAME_PATTERN = r"^[a-z_][a-z0-9_-]{0,31}$"
+ABSOLUTE_PATH_PATTERN = r"^/[^\x00]*$"
+
+
+class ManagedDirectory(BaseModel):
+    path: str = Field(min_length=2, max_length=255, pattern=ABSOLUTE_PATH_PATTERN)
+    mode: str = Field(default="0750", pattern=r"^0[0-7]{3}$")
+
+
+class ManagedSymlink(BaseModel):
+    path: str = Field(min_length=2, max_length=255, pattern=ABSOLUTE_PATH_PATTERN)
+    target: str = Field(min_length=1, max_length=255)
 
 
 class ManagedUserCreate(BaseModel):
@@ -14,6 +25,8 @@ class ManagedUserCreate(BaseModel):
     shell: str = Field(default="/bin/bash", min_length=1, max_length=255)
     home: str | None = Field(default=None, max_length=255)
     sudo_rule: str | None = Field(default=None, max_length=4096)
+    directories: list[ManagedDirectory] = Field(default_factory=list, max_length=20)
+    symlinks: list[ManagedSymlink] = Field(default_factory=list, max_length=20)
 
 
 class ManagedUserUpdate(BaseModel):
@@ -23,6 +36,8 @@ class ManagedUserUpdate(BaseModel):
     shell: str | None = Field(default=None, min_length=1, max_length=255)
     home: str | None = Field(default=None, max_length=255)
     sudo_rule: str | None = Field(default=None, max_length=4096)
+    directories: list[ManagedDirectory] | None = Field(default=None, max_length=20)
+    symlinks: list[ManagedSymlink] | None = Field(default=None, max_length=20)
     enabled: bool | None = None
 
 
@@ -35,6 +50,8 @@ class ManagedUserRead(BaseModel):
     shell: str
     home: str | None
     sudo_rule: str | None
+    directories: list[ManagedDirectory]
+    symlinks: list[ManagedSymlink]
     enabled: bool
     created_at: datetime
     updated_at: datetime

@@ -75,6 +75,21 @@ def test_runner_failure_only_marks_the_affected_target() -> None:
         assert targets[second.id].error == "permission denied"
 
 
+def test_nonzero_runner_marks_unresolved_targets_failed() -> None:
+    with SessionLocal() as session:
+        host = Host(name="lab-01", address="192.0.2.10")
+        job = Job(kind="sync", state="running")
+        session.add_all([host, job])
+        session.flush()
+        session.add(JobTarget(job_id=job.id, host_id=host.id, state="pending"))
+        session.commit()
+
+        targets = jobs._finish_pending_targets(session, job, failure_message="Ansible 以非零状态退出")
+
+        assert targets[0].state == "failed"
+        assert targets[0].error == "Ansible 以非零状态退出"
+
+
 def test_successful_targets_update_user_host_state() -> None:
     with SessionLocal() as session:
         host = Host(name="lab-01", address="192.0.2.10")

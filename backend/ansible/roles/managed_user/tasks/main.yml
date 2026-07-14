@@ -48,6 +48,23 @@
     validate: "visudo -cf %s"
   when: desired_user.sudo_rule | default('') | length > 0
 
+- name: Ensure managed directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ desired_user.username }}"
+    group: "{{ desired_user.primary_group | default(desired_user.username, true) }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ desired_user.directories | default([]) }}"
+
+- name: Ensure managed symlinks exist
+  ansible.builtin.file:
+    src: "{{ item.target }}"
+    dest: "{{ item.path }}"
+    state: link
+    force: true
+  loop: "{{ desired_user.symlinks | default([]) }}"
+
 - name: Record post script during preview
   ansible.builtin.debug:
     msg: "已选择后置脚本，正式执行时将在目标机器运行"

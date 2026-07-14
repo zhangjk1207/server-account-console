@@ -47,6 +47,8 @@ class ManagedUser(TimestampedRecord, Base):
     shell: Mapped[str] = mapped_column(String(255), default="/bin/bash")
     home: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sudo_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    directories: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    symlinks: Mapped[list[dict]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

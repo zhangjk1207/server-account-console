@@ -4,10 +4,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import require_admin, require_csrf
-from app.db.models import Host
+from app.db.models import Host, Job, JobTarget
 from app.db.session import get_db_session
 from app.schemas.host import FingerprintConfirmation, HostCreate, HostProbeRead, HostRead, HostUpdate
-from app.services.hosts import apply_probe_result, create_host, get_active_host, probe_host, update_host
+from app.services.hosts import _scan_ed25519_key, apply_probe_result, create_host, get_active_host, probe_host, update_host
 
 router = APIRouter(prefix="/hosts", tags=["hosts"], dependencies=[Depends(require_admin)])
 
@@ -41,6 +41,14 @@ def edit_host(host_id: str, payload: HostUpdate, session: Session = Depends(get_
 @router.delete("/{host_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
 def archive_host(host_id: str, session: Session = Depends(get_db_session)) -> Response:
     host = require_host(session, host_id)
+    active_target = session.scalar(
+        select(JobTarget.id).join(Job, Job.id == JobTarget.job_id).where(
+            JobTarget.host_id == host.id,
+            Job.state.in_({"pending", "preview_running", "ready_to_confirm", "running"}),
+        )
+    )
+    if active_target is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="机器被未完成任务引用，暂不能归档")
     host.archived = True
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -67,8 +75,14 @@ def confirm_fingerprint(host_id: str, payload: FingerprintConfirmation, session:
     host = require_host(session, host_id)
     if host.status == "fingerprint_changed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="主机指纹已变化，请先重新测试连接")
+    fingerprint, _, error = _scan_ed25519_key(host)
+    if error or fingerprint != payload.fingerprint:
+        host.status = "fingerprint_changed"
+        host.last_probe_error = error or "确认时检测到主机指纹变化"
+        session.commit()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="主机指纹已变化，请重新测试连接")
     host.host_key_fingerprint = payload.fingerprint
-    host.status = "unreachable"
+    apply_probe_result(host, probe_host(host))
     session.commit()
     session.refresh(host)
     return host
