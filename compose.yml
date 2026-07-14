@@ -3,7 +3,6 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      CONTROL_SSH_KEY_PATH: ${CONTROL_SSH_KEY_PATH}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
       SESSION_SECRET: ${SESSION_SECRET}
@@ -11,7 +10,6 @@ services:
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
     volumes:
       - ./runtime:/var/lib/server-account-console
-      - ${SSH_KEY_PATH}:${CONTROL_SSH_KEY_PATH}:ro
     expose:
       - "8000"
 

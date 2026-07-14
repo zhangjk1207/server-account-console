@@ -5,6 +5,7 @@ from fastapi import APIRouter, Response, status
 from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
+from app.services.credentials import CredentialCipher, CredentialConfigurationError
 
 router = APIRouter()
 
@@ -12,11 +13,10 @@ router = APIRouter()
 @router.get("/health")
 def health(response: Response) -> dict[str, object]:
     settings = get_settings()
-    key = Path(settings.control_ssh_key_path)
     checks = {
         "database": "degraded",
-        "ssh_key": "degraded",
         "ansible": "degraded",
+        "credential_encryption": "degraded",
     }
 
     try:
@@ -27,12 +27,15 @@ def health(response: Response) -> dict[str, object]:
     except Exception:
         pass
 
-    if key.exists() and not key.stat().st_mode & 0o077:
-        checks["ssh_key"] = "ok"
-
     project_dir = Path(__file__).resolve().parents[2] / "ansible"
     if project_dir.is_dir() and importlib.util.find_spec("ansible_runner"):
         checks["ansible"] = "ok"
+
+    try:
+        CredentialCipher.from_settings()
+        checks["credential_encryption"] = "ok"
+    except CredentialConfigurationError:
+        pass
 
     if any(value != "ok" for value in checks.values()):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

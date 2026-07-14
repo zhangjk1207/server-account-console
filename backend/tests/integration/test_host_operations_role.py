@@ -22,3 +22,14 @@ def test_sshd_role_validates_before_reloading_service() -> None:
     assert "sshd -T" in content
     assert "sshd -t" in content
     assert content.index("sshd -t") < content.index("Reload SSH service")
+
+
+def test_sshd_role_restores_the_previous_fragment_when_activation_fails() -> None:
+    role = Path(__file__).parents[2] / "ansible" / "roles" / "host_operations" / "tasks" / "main.yml"
+    content = role.read_text(encoding="utf-8")
+
+    assert "Backup existing managed SSH password authentication fragment" in content
+    assert "Restore previous managed SSH password authentication fragment" in content
+    assert "Remove newly created managed SSH password authentication fragment" in content
+    assert "rescue:" in content
+    assert "b64decode" in content

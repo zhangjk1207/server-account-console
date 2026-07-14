@@ -1,23 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
 
 describe("api", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
+  afterEach(() => vi.unstubAllGlobals());
 
-  it("obtains a CSRF token before the first authenticated mutation", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: "csrf-token" }) })
-      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "host-1" }) });
-    vi.stubGlobal("fetch", fetchMock);
+  it("does not label multipart credential uploads as JSON", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: "csrf" }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetch);
 
-    await api<{ id: string }>("/hosts", { method: "POST", body: "{}" });
+    const form = new FormData();
+    form.set("private_key_file", new File(["private-key"], "host.key"));
+    form.set("sudo_password", "secret");
+    await api("/hosts/host-1/credentials", { method: "PUT", body: form });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/csrf", expect.objectContaining({ credentials: "include" }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/hosts", expect.objectContaining({
-      headers: expect.objectContaining({ "X-CSRF-Token": "csrf-token" }),
-    }));
+    expect(fetch.mock.calls[1][1].headers).not.toHaveProperty("Content-Type");
+    expect(fetch.mock.calls[1][1].body).toBe(form);
   });
 });

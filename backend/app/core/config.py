@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     session_secret: str
     database_url: str = "sqlite:////var/lib/server-account-console/app.db"
     app_origin: str = "http://127.0.0.1:5174"
-    control_ssh_key_path: str = "/run/secrets/control_ssh_key"
     credential_encryption_key: str | None = None
     host_probe_interval_seconds: int = 300
     backup_interval_seconds: int = 86400

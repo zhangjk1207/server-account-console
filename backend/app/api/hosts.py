@@ -58,16 +58,25 @@ def archive_host(host_id: str, session: Session = Depends(get_db_session)) -> Re
 @router.post("/{host_id}/test", response_model=HostProbeRead, dependencies=[Depends(require_csrf)])
 def test_host(host_id: str, session: Session = Depends(get_db_session)) -> HostProbeRead:
     host = require_host(session, host_id)
-    result = probe_host(host)
-    apply_probe_result(host, result)
+    credential = session.query(HostCredential).filter(HostCredential.host_id == host.id).one_or_none()
+    if credential is not None:
+        result = test_host_credential(session, host)
+        apply_credential_probe(session, host, result)
+        reachable = result.ssh_ok is True
+        requires_confirmation = result.requires_confirmation
+    else:
+        result = probe_host(host)
+        apply_probe_result(host, result)
+        reachable = result.reachable
+        requires_confirmation = host.status == "unconfirmed" and result.fingerprint is not None
     session.commit()
     return HostProbeRead(
         status=host.status,
         fingerprint=result.fingerprint,
-        reachable=result.reachable,
+        reachable=reachable,
         latency_ms=result.latency_ms,
         error=result.error,
-        requires_confirmation=host.status == "unconfirmed" and result.fingerprint is not None,
+        requires_confirmation=requires_confirmation,
     )
 
 

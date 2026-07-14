@@ -1,4 +1,9 @@
 export type Host = { id:string; name:string; address:string; port:number; ssh_user:string; tags:string[]; status:string; last_probe_error?:string|null; last_probe_latency_ms?:number|null };
+export type HostCredentialStatus = { private_key_configured:boolean; sudo_password_configured:boolean; verified_at:string|null; ssh_verified:boolean|null; sudo_verified:boolean|null; last_error:string|null };
+export type HostCredentialProbe = { fingerprint:string|null; requires_confirmation:boolean; ssh_ok:boolean|null; sudo_ok:boolean|null; error:string|null; latency_ms:number|null };
+export type HostAuthorizedKey = { public_key:string; fingerprint:string; comment:string };
+export type HostUser = { username:string; uid:number; primary_group:string; groups:string[]; shell:string; home:string; locked:boolean|null; expires_at:string|null; public_keys:HostAuthorizedKey[] };
+export type SshPasswordAuthentication = { enabled:boolean };
 export type User = { id:string; username:string; display_name:string; shell:string; home:string; enabled:boolean };
 export type Script = { id:string; name:string; description:string; version:number; enabled:boolean; body:string };
 export type SshKey = { id:string; managed_user_id:string; public_key:string; fingerprint:string; comment:string; enabled:boolean };
@@ -7,7 +12,7 @@ export type JobTarget = { host_id:string; host_name:string; state:string; output
 export type JobEvent = { id:string; job_id:string; host_id:string|null; level:string; message:string; created_at:string };
 export type Job = {
   id:string; state:string; kind:string; created_at:string; started_at?:string|null; finished_at?:string|null;
-  user_snapshot?:Record<string, unknown>; request_snapshot:{ host_ids?:string[]; hosts?:{id:string;name:string;address:string}[] };
+  user_snapshot?:Record<string, unknown>; request_snapshot:Record<string, unknown> & { host_ids?:string[]; hosts?:{id:string;name:string;address:string}[] };
   script_snapshot?:{name:string;version:number}|null; targets?:JobTarget[];
 };
 
@@ -25,7 +30,7 @@ export async function api<T>(path:string, init:RequestInit = {}): Promise<T> {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path !== "/auth/login") await ensureCsrf();
   const response = await fetch(`/api${path}`, {
     credentials:"include",
-    headers:{ "Content-Type":"application/json", ...(csrf ? {"X-CSRF-Token":csrf}:{}), ...init.headers },
+    headers:{ ...(init.body instanceof FormData ? {} : {"Content-Type":"application/json"}), ...(csrf ? {"X-CSRF-Token":csrf}:{}), ...init.headers },
     ...init,
   });
   if (!response.ok) throw new Error((await response.json().catch(()=>null))?.detail || `请求失败 (${response.status})`);

@@ -1,14 +1,11 @@
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.db.models import Host
 from app.schemas.host import HostCreate, HostUpdate
 
@@ -106,33 +103,11 @@ def probe_host(host: Host) -> HostProbeResult:
         return HostProbeResult(fingerprint=None, reachable=False, error=scan_error)
     if not host.host_key_fingerprint or host.host_key_fingerprint != fingerprint:
         return HostProbeResult(fingerprint=fingerprint, reachable=False, known_host_line=known_host_line)
-
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as known_hosts:
-        known_hosts.write(f"{known_host_line}\n")
-        known_hosts.flush()
-        command = [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            f"UserKnownHostsFile={known_hosts.name}",
-            "-o",
-            "ConnectTimeout=5",
-            "-i",
-            str(Path(get_settings().control_ssh_key_path)),
-            "-p",
-            str(host.port),
-            f"{host.ssh_user}@{host.address}",
-            "true",
-        ]
-        connection = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
     latency_ms = round((time.monotonic() - started) * 1000)
     return HostProbeResult(
         fingerprint=fingerprint,
-        reachable=connection.returncode == 0,
+        reachable=False,
         latency_ms=latency_ms,
-        error=None if connection.returncode == 0 else connection.stderr.strip() or "SSH 登录失败",
+        error="请先配置并验证主机连接凭证",
         known_host_line=known_host_line,
     )

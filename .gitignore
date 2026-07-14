@@ -5,6 +5,9 @@
 secrets/
 keys/
 
+# User-supplied integration credentials and target metadata
+/tests/
+
 # Runtime data and logs
 .worktrees/
 runtime/

@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+from app.services.host_connections import CredentialProbeResult
 
 from app.api import hosts as hosts_api
 from app.db.models import Job, JobTarget
@@ -63,12 +64,12 @@ def test_fingerprint_confirmation_rejects_a_key_that_changed_since_test(monkeypa
     asyncio.run(scenario())
 
 
-def test_fingerprint_confirmation_runs_authenticated_probe_and_enables_host(monkeypatch) -> None:
+def test_fingerprint_confirmation_without_a_host_credential_keeps_the_host_unreachable(monkeypatch) -> None:
     monkeypatch.setattr(hosts_api, "_scan_ed25519_key", lambda _host: ("SHA256:current", "lab-01 ssh-ed25519 AAAA", None))
     monkeypatch.setattr(
         hosts_api,
         "probe_host",
-        lambda _host: HostProbeResult(fingerprint="SHA256:current", reachable=True, latency_ms=12, known_host_line="lab-01 ssh-ed25519 AAAA"),
+        lambda _host: HostProbeResult(fingerprint="SHA256:current", reachable=False, latency_ms=12, error="请先配置并验证主机连接凭证", known_host_line="lab-01 ssh-ed25519 AAAA"),
     )
 
     async def scenario() -> None:
@@ -84,8 +85,39 @@ def test_fingerprint_confirmation_runs_authenticated_probe_and_enables_host(monk
             )
 
             assert response.status_code == 200
-            assert response.json()["status"] == "reachable"
+            assert response.json()["status"] == "unreachable"
             assert response.json()["last_probe_latency_ms"] == 12
+
+    asyncio.run(scenario())
+
+
+def test_host_test_uses_its_own_stored_credential(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(hosts_api, "probe_host", lambda _host: (_ for _ in ()).throw(AssertionError("不应使用旧探测")))
+
+    def credential_probe(_session, host):
+        calls.append(host.id)
+        return CredentialProbeResult("SHA256:test", False, True, True, None, 8)
+
+    monkeypatch.setattr(hosts_api, "test_host_credential", credential_probe)
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            host = await client.post("/api/hosts", json=HOST_PAYLOAD, headers={"X-CSRF-Token": token})
+            with SessionLocal() as session:
+                from app.db.models import HostCredential
+
+                session.add(HostCredential(host_id=host.json()["id"], private_key_ciphertext="cipher", sudo_password_ciphertext="cipher"))
+                session.commit()
+
+            response = await client.post(f"/api/hosts/{host.json()['id']}/test", headers={"X-CSRF-Token": token})
+
+            assert response.status_code == 200
+            assert response.json()["reachable"] is True
+            assert calls == [host.json()["id"]]
 
     asyncio.run(scenario())
 

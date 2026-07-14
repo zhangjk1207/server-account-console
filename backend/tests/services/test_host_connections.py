@@ -5,6 +5,7 @@ from app.db.models import Host, HostCredential
 from app.db.session import SessionLocal
 from app.services import host_connections
 from app.services.credentials import CredentialCipher
+from app.services.hosts import probe_host
 
 
 def make_credential(host: Host) -> HostCredential:
@@ -39,6 +40,17 @@ def test_unconfirmed_host_returns_fingerprint_without_attempting_login(monkeypat
 def test_confirmed_host_checks_ssh_then_forced_sudo(monkeypatch) -> None:
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     get_settings.cache_clear()
+
+
+def test_legacy_fingerprint_probe_does_not_use_a_global_private_key(monkeypatch) -> None:
+    host = Host(name="lab-01", address="192.0.2.10", host_key_fingerprint="SHA256:known")
+    monkeypatch.setattr("app.services.hosts._scan_ed25519_key", lambda _host: ("SHA256:known", "lab-01 ssh-ed25519 AAAA", None))
+    monkeypatch.setattr("app.services.hosts.subprocess.run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得进行全局私钥 SSH 登录")))
+
+    result = probe_host(host)
+
+    assert result.reachable is False
+    assert result.error == "请先配置并验证主机连接凭证"
     commands: list[list[str]] = []
 
     class Result:

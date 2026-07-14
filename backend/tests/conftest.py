@@ -1,16 +1,13 @@
 import os
-from pathlib import Path
 
 import bcrypt
 import pytest
+from cryptography.fernet import Fernet
 
 os.environ.setdefault("ADMIN_PASSWORD_HASH", bcrypt.hashpw(b"correct-horse", bcrypt.gensalt()).decode())
 os.environ.setdefault("SESSION_SECRET", "test-session-secret-that-is-long-enough")
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
-test_key = Path("/tmp/server-account-console-test-key")
-test_key.write_text("test key", encoding="utf-8")
-test_key.chmod(0o600)
-os.environ.setdefault("CONTROL_SSH_KEY_PATH", str(test_key))
+os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
 
 @pytest.fixture(autouse=True)

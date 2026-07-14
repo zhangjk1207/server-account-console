@@ -45,69 +45,89 @@
       password_authentication: "{{ 'passwordauthentication yes' in sshd_effective.stdout }}"
   when: host_operation.action | default('') == 'inspect_sshd'
 
-- name: Create candidate SSH password authentication fragment
-  ansible.builtin.tempfile:
-    state: file
-    suffix: .conf
-  register: sshd_candidate
-  when: host_operation.action | default('') == 'sshd_password_authentication'
-
-- name: Write candidate SSH password authentication fragment
-  ansible.builtin.copy:
-    content: "PasswordAuthentication {{ 'yes' if host_operation.enabled else 'no' }}\n"
-    dest: "{{ sshd_candidate.path }}"
-    mode: "0600"
-  when: host_operation.action | default('') == 'sshd_password_authentication'
-
-- name: Validate candidate SSH password authentication fragment
+- name: Validate proposed SSH password authentication setting
   ansible.builtin.command:
-    cmd: "sshd -t -f {{ sshd_candidate.path }}"
+    cmd: "sshd -t -o PasswordAuthentication={{ 'yes' if host_operation.enabled else 'no' }}"
   changed_when: false
   when: host_operation.action | default('') == 'sshd_password_authentication'
 
-- name: Install managed SSH password authentication fragment
-  ansible.builtin.copy:
-    content: "PasswordAuthentication {{ 'yes' if host_operation.enabled else 'no' }}\n"
-    dest: /etc/ssh/sshd_config.d/99-server-account-console.conf
-    mode: "0644"
+- name: Inspect managed SSH password authentication fragment
+  ansible.builtin.stat:
+    path: /etc/ssh/sshd_config.d/99-server-account-console.conf
+  register: sshd_fragment_stat
+  when: host_operation.action | default('') == 'sshd_password_authentication'
+
+- name: Backup existing managed SSH password authentication fragment
+  ansible.builtin.slurp:
+    src: /etc/ssh/sshd_config.d/99-server-account-console.conf
+  register: sshd_existing_fragment
+  when:
+    - host_operation.action | default('') == 'sshd_password_authentication'
+    - sshd_fragment_stat.stat.exists
+
+- name: Install and activate managed SSH password authentication fragment
+  block:
+    - name: Install managed SSH password authentication fragment
+      ansible.builtin.copy:
+        content: "PasswordAuthentication {{ 'yes' if host_operation.enabled else 'no' }}\n"
+        dest: /etc/ssh/sshd_config.d/99-server-account-console.conf
+        mode: "0644"
+
+    - name: Validate active SSH configuration
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Reload SSH service
+      ansible.builtin.service:
+        name: sshd
+        state: reloaded
+      register: sshd_reload
+      failed_when: false
+
+    - name: Reload SSH service fallback
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+      when: sshd_reload.failed | default(false)
+  rescue:
+    - name: Restore previous managed SSH password authentication fragment
+      ansible.builtin.copy:
+        content: "{{ sshd_existing_fragment.content | b64decode }}"
+        dest: /etc/ssh/sshd_config.d/99-server-account-console.conf
+        mode: "0644"
+      when: sshd_fragment_stat.stat.exists
+
+    - name: Remove newly created managed SSH password authentication fragment
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/99-server-account-console.conf
+        state: absent
+      when: not sshd_fragment_stat.stat.exists
+
+    - name: Validate restored SSH configuration
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Reload restored SSH service
+      ansible.builtin.service:
+        name: sshd
+        state: reloaded
+      register: sshd_restore_reload
+      failed_when: false
+
+    - name: Reload restored SSH service fallback
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+      when: sshd_restore_reload.failed | default(false)
+
+    - name: Report SSH password authentication activation failure
+      ansible.builtin.fail:
+        msg: SSH 配置未能生效，已恢复原有配置
   when:
     - host_operation.action | default('') == 'sshd_password_authentication'
     - not ansible_check_mode
-
-- name: Validate active SSH configuration
-  ansible.builtin.command:
-    cmd: sshd -t
-  changed_when: false
-  when:
-    - host_operation.action | default('') == 'sshd_password_authentication'
-    - not ansible_check_mode
-
-- name: Reload SSH service
-  ansible.builtin.service:
-    name: sshd
-    state: reloaded
-  register: sshd_reload
-  failed_when: false
-  when:
-    - host_operation.action | default('') == 'sshd_password_authentication'
-    - not ansible_check_mode
-
-- name: Reload SSH service fallback
-  ansible.builtin.service:
-    name: ssh
-    state: reloaded
-  when:
-    - host_operation.action | default('') == 'sshd_password_authentication'
-    - not ansible_check_mode
-    - sshd_reload.failed | default(false)
-
-- name: Remove candidate SSH password authentication fragment
-  ansible.builtin.file:
-    path: "{{ sshd_candidate.path }}"
-    state: absent
-  when:
-    - host_operation.action | default('') == 'sshd_password_authentication'
-    - sshd_candidate.path is defined
 
 - name: Ensure primary group exists for user update
   ansible.builtin.group:
