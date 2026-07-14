@@ -1,0 +1,25 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+secrets/
+keys/
+
+# Runtime data and logs
+data/
+logs/
+ansible-artifacts/
+
+# Frontend
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Test output
+coverage/
+playwright-report/
+test-results/
