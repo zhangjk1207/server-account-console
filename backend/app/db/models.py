@@ -94,6 +94,15 @@ class JobTarget(TimestampedRecord, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class JobEvent(TimestampedRecord, Base):
+    __tablename__ = "job_events"
+
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    host_id: Mapped[str | None] = mapped_column(ForeignKey("hosts.id", ondelete="SET NULL"), nullable=True)
+    level: Mapped[str] = mapped_column(String(16), default="info")
+    message: Mapped[str] = mapped_column(Text)
+
+
 class HostUserState(TimestampedRecord, Base):
     __tablename__ = "host_user_states"
     __table_args__ = (UniqueConstraint("host_id", "managed_user_id", name="uq_host_user_state"),)

@@ -92,6 +92,15 @@ def upgrade() -> None:
     op.create_index("ix_job_targets_job_id", "job_targets", ["job_id"])
     op.create_index("ix_job_targets_host_id", "job_targets", ["host_id"])
     op.create_table(
+        "job_events",
+        *timestamp_columns(),
+        sa.Column("job_id", sa.String(length=36), sa.ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("host_id", sa.String(length=36), sa.ForeignKey("hosts.id", ondelete="SET NULL")),
+        sa.Column("level", sa.String(length=16), nullable=False),
+        sa.Column("message", sa.Text(), nullable=False),
+    )
+    op.create_index("ix_job_events_job_id", "job_events", ["job_id"])
+    op.create_table(
         "host_user_states",
         *timestamp_columns(),
         sa.Column("host_id", sa.String(length=36), sa.ForeignKey("hosts.id", ondelete="CASCADE"), nullable=False),
@@ -106,5 +115,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for table in ["host_user_states", "job_targets", "jobs", "script_templates", "ssh_public_keys", "managed_users", "hosts"]:
+    for table in ["host_user_states", "job_events", "job_targets", "jobs", "script_templates", "ssh_public_keys", "managed_users", "hosts"]:
         op.drop_table(table)
