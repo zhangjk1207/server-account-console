@@ -1,0 +1,6 @@
+- name: Apply managed Linux account state
+  hosts: all
+  gather_facts: false
+  become: true
+  roles:
+    - managed_user

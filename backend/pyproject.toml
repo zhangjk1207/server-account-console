@@ -9,6 +9,8 @@ description = "Internal Linux account management control plane"
 requires-python = ">=3.13"
 dependencies = [
   "alembic>=1.14",
+  "ansible-core>=2.18",
+  "ansible-runner>=2.4",
   "bcrypt>=4.0",
   "fastapi>=0.115",
   "itsdangerous>=2.2",

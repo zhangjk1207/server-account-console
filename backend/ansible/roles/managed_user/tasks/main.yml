@@ -1,0 +1,56 @@
+- name: Ensure primary group exists
+  ansible.builtin.group:
+    name: "{{ desired_user.primary_group | default(desired_user.username, true) }}"
+    state: present
+
+- name: Ensure supplemental groups exist
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ desired_user.groups | default([]) }}"
+
+- name: Ensure Linux account exists
+  ansible.builtin.user:
+    name: "{{ desired_user.username }}"
+    group: "{{ desired_user.primary_group | default(desired_user.username, true) }}"
+    groups: "{{ desired_user.groups | default([]) | join(',') }}"
+    append: true
+    shell: "{{ desired_user.shell }}"
+    home: "{{ desired_user.home }}"
+    create_home: true
+    state: present
+
+- name: Ensure SSH directory exists
+  ansible.builtin.file:
+    path: "{{ desired_user.home }}/.ssh"
+    state: directory
+    owner: "{{ desired_user.username }}"
+    group: "{{ desired_user.primary_group | default(desired_user.username, true) }}"
+    mode: "0700"
+
+- name: Add managed public keys without removing unmanaged keys
+  ansible.builtin.lineinfile:
+    path: "{{ desired_user.home }}/.ssh/authorized_keys"
+    line: "{{ item }}"
+    create: true
+    owner: "{{ desired_user.username }}"
+    group: "{{ desired_user.primary_group | default(desired_user.username, true) }}"
+    mode: "0600"
+  loop: "{{ desired_user.public_keys }}"
+
+- name: Configure sudo policy
+  ansible.builtin.template:
+    src: managed-sudoers.j2
+    dest: "/etc/sudoers.d/server-account-{{ desired_user.username }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  when: desired_user.sudo_rule | default('') | length > 0
+
+- name: Run approved post script
+  ansible.builtin.command:
+    cmd: "{{ post_script_path }}"
+  environment:
+    SAC_INPUT_JSON: "{{ task_input_path }}"
+  when: post_script_path | default('') | length > 0
