@@ -12,7 +12,8 @@ from app.api.scripts import router as scripts_router
 from app.api.users import router as users_router
 from app.core.config import get_settings
 from app.db.session import SessionLocal
-from app.services.jobs import RUNNER_LOCK
+from app.services.backup import backup_sqlite_url
+from app.services.jobs import RUNNER_LOCK, expire_ready_previews
 from app.services.probes import probe_all_hosts
 
 
@@ -25,13 +26,22 @@ async def lifespan(_: FastAPI):
             await asyncio.to_thread(probe_all_hosts, SessionLocal, is_job_running=RUNNER_LOCK.locked)
             await asyncio.sleep(settings.host_probe_interval_seconds)
 
-    task = asyncio.create_task(probe_loop())
+    async def maintenance_loop() -> None:
+        while True:
+            with SessionLocal() as session:
+                expire_ready_previews(session)
+            await asyncio.to_thread(backup_sqlite_url, settings.database_url)
+            await asyncio.sleep(settings.backup_interval_seconds)
+
+    tasks = [asyncio.create_task(probe_loop()), asyncio.create_task(maintenance_loop())]
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 app = FastAPI(title="Server Account Console", lifespan=lifespan)
 app.add_middleware(

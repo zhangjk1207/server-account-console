@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_origin: str = "http://127.0.0.1:5174"
     control_ssh_key_path: str = "/run/secrets/control_ssh_key"
     host_probe_interval_seconds: int = 300
+    backup_interval_seconds: int = 86400
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

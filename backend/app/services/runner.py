@@ -7,7 +7,7 @@ from typing import Callable
 import ansible_runner
 
 
-PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*", re.DOTALL)
+PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,8 @@ class RunnerRequest:
     inventory: dict
     extravars: dict
     check: bool
+    timeout: int = 1200
+    forks: int = 5
 
 
 @dataclass(frozen=True)
@@ -26,12 +28,17 @@ class RunnerResult:
 
 
 def redact_event(event: dict, key_path: Path) -> dict:
-    redacted = copy.deepcopy(event)
-    stdout = redacted.get("stdout")
-    if isinstance(stdout, str):
-        stdout = stdout.replace(str(key_path), "[REDACTED_KEY_PATH]")
-        redacted["stdout"] = PRIVATE_KEY_BLOCK.sub("[REDACTED_PRIVATE_KEY]", stdout)
-    return redacted
+    def redact(value):
+        if isinstance(value, str):
+            value = value.replace(str(key_path), "[REDACTED_KEY_PATH]")
+            return PRIVATE_KEY_BLOCK.sub("[REDACTED_PRIVATE_KEY]", value)
+        if isinstance(value, dict):
+            return {key: redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    return redact(copy.deepcopy(event))
 
 
 def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_path: Path) -> RunnerResult:
@@ -50,6 +57,7 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
         extravars=request.extravars,
         event_handler=handle_event,
         quiet=True,
-        cmdline="--check" if request.check else None,
+        cmdline=f"{'--check ' if request.check else ''}-f {request.forks}",
+        timeout=request.timeout,
     )
     return RunnerResult(status=result.status, rc=result.rc, events=events)

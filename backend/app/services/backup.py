@@ -15,6 +15,17 @@ def create_backup(database: Path, backup_dir: Path, now: datetime) -> Path:
     return destination
 
 
+def backup_sqlite_url(database_url: str, *, now: datetime | None = None) -> Path:
+    if not database_url.startswith("sqlite:///"):
+        raise ValueError("仅支持 SQLite 数据库备份")
+    database = Path(database_url.removeprefix("sqlite:///"))
+    backup_dir = database.parent / "backups"
+    timestamp = now or utc_now()
+    backup = create_backup(database, backup_dir, timestamp)
+    remove_expired_backups(backup_dir, timestamp)
+    return backup
+
+
 def remove_expired_backups(backup_dir: Path, now: datetime, retention_days: int = 14) -> None:
     cutoff = now.timestamp() - retention_days * 86400
     for backup in backup_dir.glob("backup-*.db"):

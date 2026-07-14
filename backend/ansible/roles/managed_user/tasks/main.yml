@@ -48,9 +48,44 @@
     validate: "visudo -cf %s"
   when: desired_user.sudo_rule | default('') | length > 0
 
+- name: Record post script during preview
+  ansible.builtin.debug:
+    msg: "已选择后置脚本，正式执行时将在目标机器运行"
+  when:
+    - post_script_content | default('') | length > 0
+    - ansible_check_mode
+
 - name: Run approved post script
-  ansible.builtin.command:
-    cmd: "{{ post_script_path }}"
-  environment:
-    SAC_INPUT_JSON: "{{ task_input_path }}"
-  when: post_script_path | default('') | length > 0
+  when:
+    - post_script_content | default('') | length > 0
+    - not ansible_check_mode
+  block:
+    - name: Create remote post script workspace
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "server-account-console-"
+      register: post_script_workspace
+
+    - name: Transfer approved post script
+      ansible.builtin.copy:
+        content: "{{ post_script_content }}"
+        dest: "{{ post_script_workspace.path }}/post-script.sh"
+        mode: "0700"
+
+    - name: Transfer frozen task input
+      ansible.builtin.copy:
+        content: "{{ task_input_json }}"
+        dest: "{{ post_script_workspace.path }}/task-input.json"
+        mode: "0600"
+
+    - name: Execute approved post script
+      ansible.builtin.command:
+        cmd: "{{ post_script_workspace.path }}/post-script.sh"
+      environment:
+        SAC_INPUT_JSON: "{{ post_script_workspace.path }}/task-input.json"
+  always:
+    - name: Remove remote post script workspace
+      ansible.builtin.file:
+        path: "{{ post_script_workspace.path }}"
+        state: absent
+      when: post_script_workspace.path is defined
