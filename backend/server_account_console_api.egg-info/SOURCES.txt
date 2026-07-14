@@ -1,6 +1,0 @@
-pyproject.toml
-server_account_console_api.egg-info/PKG-INFO
-server_account_console_api.egg-info/SOURCES.txt
-server_account_console_api.egg-info/dependency_links.txt
-server_account_console_api.egg-info/requires.txt
-server_account_console_api.egg-info/top_level.txt

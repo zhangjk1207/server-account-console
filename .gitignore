@@ -19,7 +19,11 @@ dist/
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
+
+# TypeScript build metadata
+*.tsbuildinfo
 
 # Test output
 coverage/
