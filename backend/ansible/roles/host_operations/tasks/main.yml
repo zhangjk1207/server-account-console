@@ -94,6 +94,19 @@
         name: ssh
         state: reloaded
       when: sshd_reload.failed | default(false)
+
+    - name: Read effective SSH password authentication after reload
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: sshd_activated_effective
+      changed_when: false
+
+    - name: Verify effective SSH password authentication setting
+      ansible.builtin.assert:
+        that:
+          - "(host_operation.enabled and 'passwordauthentication yes' in sshd_activated_effective.stdout) or (not host_operation.enabled and 'passwordauthentication no' in sshd_activated_effective.stdout)"
+          - "(host_operation.enabled and 'kbdinteractiveauthentication yes' in sshd_activated_effective.stdout) or (not host_operation.enabled and 'kbdinteractiveauthentication no' in sshd_activated_effective.stdout)"
+        fail_msg: SSH 密码登录设置未被 sshd 生效配置加载
   rescue:
     - name: Restore previous managed SSH password authentication fragment
       ansible.builtin.copy:

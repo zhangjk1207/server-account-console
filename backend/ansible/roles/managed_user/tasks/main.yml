@@ -46,7 +46,13 @@
     group: root
     mode: "0440"
     validate: "visudo -cf %s"
-  when: desired_user.sudo_rule | default('') | length > 0
+  when: desired_user.sudo_rule | default('', true) | length > 0
+
+- name: Remove managed sudo policy when no rule is declared
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/server-account-{{ desired_user.username }}"
+    state: absent
+  when: desired_user.sudo_rule | default('', true) | length == 0
 
 - name: Ensure managed directories exist
   ansible.builtin.file:

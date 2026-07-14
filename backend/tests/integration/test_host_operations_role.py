@@ -40,3 +40,12 @@ def test_sshd_role_restores_the_previous_fragment_when_activation_fails() -> Non
     assert "Remove newly created managed SSH password authentication fragment" in content
     assert "rescue:" in content
     assert "b64decode" in content
+
+
+def test_sshd_role_verifies_the_effective_setting_after_reload() -> None:
+    role = Path(__file__).parents[2] / "ansible" / "roles" / "host_operations" / "tasks" / "main.yml"
+    content = role.read_text(encoding="utf-8")
+
+    assert "Verify effective SSH password authentication setting" in content
+    assert "ansible.builtin.assert" in content
+    assert content.index("Verify effective SSH password authentication setting") > content.index("Reload SSH service")

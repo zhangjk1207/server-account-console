@@ -251,7 +251,7 @@ def _run_inspection(session: Session, host: Host, operation: dict):
                         "ansible_port": host.port,
                         "ansible_user": host.ssh_user,
                         "ansible_ssh_private_key_file": str(key_path),
-                        "ansible_ssh_common_args": f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o ConnectTimeout=10",
+                        "ansible_ssh_common_args": f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10",
                         "ansible_ssh_timeout": 300,
                         "ansible_become": True,
                         "ansible_become_password": credential.sudo_password,

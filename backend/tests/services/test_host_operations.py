@@ -120,6 +120,32 @@ def test_list_host_users_parses_fixed_playbook_debug_result(monkeypatch) -> None
         get_settings.cache_clear()
 
 
+def test_inspection_uses_only_the_uploaded_private_key(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            host = Host(name="lab-inspection", address="192.0.2.19", status="reachable", host_key_fingerprint="SHA256:known")
+            session.add(host)
+            session.flush()
+            add_verified_credential(session, host)
+            captured: dict = {}
+            monkeypatch.setattr(host_operations, "_scan_ed25519_key", lambda _host: ("SHA256:known", "lab-inspection ssh-ed25519 AAAA", None))
+
+            def fake_run(request, _event_handler, _key_path):
+                captured.update(request.inventory["all"]["hosts"][host.name])
+                return RunnerResult(status="successful", rc=0, events=[])
+
+            monkeypatch.setattr(host_operations, "run_playbook", fake_run)
+
+            host_operations._run_inspection(session, host, {"action": "inspect"})
+
+            assert "IdentitiesOnly=yes" in captured["ansible_ssh_common_args"]
+            assert "IdentityAgent=none" in captured["ansible_ssh_common_args"]
+    finally:
+        get_settings.cache_clear()
+
+
 def test_password_reset_execution_keeps_new_password_out_of_job_snapshot(monkeypatch) -> None:
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     get_settings.cache_clear()
