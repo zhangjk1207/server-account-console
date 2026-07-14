@@ -3,6 +3,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.hosts import router as hosts_router
 from app.core.config import get_settings
 
 app = FastAPI(title="Server Account Console")
@@ -14,3 +15,4 @@ app.add_middleware(
 )
 app.include_router(auth_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
+app.include_router(hosts_router, prefix="/api")

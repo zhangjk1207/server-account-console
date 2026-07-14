@@ -11,6 +11,7 @@ runtime/
 data/
 logs/
 ansible-artifacts/
+*.db
 
 # Frontend
 node_modules/

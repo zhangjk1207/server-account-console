@@ -1,0 +1,74 @@
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.security import require_admin, require_csrf
+from app.db.models import Host
+from app.db.session import get_db_session
+from app.schemas.host import FingerprintConfirmation, HostCreate, HostProbeRead, HostRead, HostUpdate
+from app.services.hosts import apply_probe_result, create_host, get_active_host, probe_host, update_host
+
+router = APIRouter(prefix="/hosts", tags=["hosts"], dependencies=[Depends(require_admin)])
+
+
+def require_host(session: Session, host_id: str) -> Host:
+    host = get_active_host(session, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="机器不存在")
+    return host
+
+
+@router.get("", response_model=list[HostRead])
+def list_hosts(session: Session = Depends(get_db_session)) -> list[Host]:
+    return list(session.scalars(select(Host).where(Host.archived.is_(False)).order_by(Host.name)))
+
+
+@router.post("", response_model=HostRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_csrf)])
+def add_host(payload: HostCreate, session: Session = Depends(get_db_session)) -> Host:
+    try:
+        return create_host(session, payload)
+    except IntegrityError as error:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="机器名称已存在") from error
+
+
+@router.patch("/{host_id}", response_model=HostRead, dependencies=[Depends(require_csrf)])
+def edit_host(host_id: str, payload: HostUpdate, session: Session = Depends(get_db_session)) -> Host:
+    return update_host(session, require_host(session, host_id), payload)
+
+
+@router.delete("/{host_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
+def archive_host(host_id: str, session: Session = Depends(get_db_session)) -> Response:
+    host = require_host(session, host_id)
+    host.archived = True
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{host_id}/test", response_model=HostProbeRead, dependencies=[Depends(require_csrf)])
+def test_host(host_id: str, session: Session = Depends(get_db_session)) -> HostProbeRead:
+    host = require_host(session, host_id)
+    result = probe_host(host)
+    apply_probe_result(host, result)
+    session.commit()
+    return HostProbeRead(
+        status=host.status,
+        fingerprint=result.fingerprint,
+        reachable=result.reachable,
+        latency_ms=result.latency_ms,
+        error=result.error,
+        requires_confirmation=host.status == "unconfirmed" and result.fingerprint is not None,
+    )
+
+
+@router.post("/{host_id}/confirm-fingerprint", response_model=HostRead, dependencies=[Depends(require_csrf)])
+def confirm_fingerprint(host_id: str, payload: FingerprintConfirmation, session: Session = Depends(get_db_session)) -> Host:
+    host = require_host(session, host_id)
+    if host.status == "fingerprint_changed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="主机指纹已变化，请先重新测试连接")
+    host.host_key_fingerprint = payload.fingerprint
+    host.status = "unreachable"
+    session.commit()
+    session.refresh(host)
+    return host
