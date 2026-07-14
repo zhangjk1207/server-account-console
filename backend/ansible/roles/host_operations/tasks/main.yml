@@ -37,18 +37,20 @@
     cmd: sshd -T
   register: sshd_effective
   changed_when: false
+  check_mode: false
   when: host_operation.action | default('') == 'inspect_sshd'
 
 - name: Emit effective SSH password authentication
   ansible.builtin.debug:
     msg:
-      password_authentication: "{{ 'passwordauthentication yes' in sshd_effective.stdout }}"
+      password_authentication: "{{ 'passwordauthentication yes' in sshd_effective.stdout or 'kbdinteractiveauthentication yes' in sshd_effective.stdout }}"
   when: host_operation.action | default('') == 'inspect_sshd'
 
 - name: Validate proposed SSH password authentication setting
   ansible.builtin.command:
-    cmd: "sshd -t -o PasswordAuthentication={{ 'yes' if host_operation.enabled else 'no' }}"
+    cmd: "sshd -t -o PasswordAuthentication={{ 'yes' if host_operation.enabled else 'no' }} -o KbdInteractiveAuthentication={{ 'yes' if host_operation.enabled else 'no' }}"
   changed_when: false
+  check_mode: false
   when: host_operation.action | default('') == 'sshd_password_authentication'
 
 - name: Inspect managed SSH password authentication fragment
@@ -69,7 +71,9 @@
   block:
     - name: Install managed SSH password authentication fragment
       ansible.builtin.copy:
-        content: "PasswordAuthentication {{ 'yes' if host_operation.enabled else 'no' }}\n"
+        content: |
+          PasswordAuthentication {{ 'yes' if host_operation.enabled else 'no' }}
+          KbdInteractiveAuthentication {{ 'yes' if host_operation.enabled else 'no' }}
         dest: /etc/ssh/sshd_config.d/99-server-account-console.conf
         mode: "0644"
 
@@ -175,9 +179,34 @@
     remove: "{{ host_operation.remove_home | default(false) }}"
   when: host_operation.action == 'delete'
 
+- name: Remove managed sudo policy when deleting local user
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/server-account-{{ host_operation.username }}"
+    state: absent
+  when: host_operation.action == 'delete'
+
+- name: Remove managed sudo policy when an update clears it
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/server-account-{{ host_operation.username }}"
+    state: absent
+  when:
+    - host_operation.action == 'upsert'
+    - host_operation.sudo_rule is not defined or host_operation.sudo_rule | length == 0
+
+- name: Load target user passwd entry for public key operation
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ host_operation.username }}"
+  when: host_operation.action == 'keys'
+
+- name: Resolve existing user home for public key operation
+  ansible.builtin.set_fact:
+    host_operation_effective_home: "{{ host_operation.home | default(getent_passwd[host_operation.username][4], true) }}"
+  when: host_operation.action == 'keys'
+
 - name: Ensure SSH directory for public key operation
   ansible.builtin.file:
-    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh"
+    path: "{{ host_operation_effective_home | default(host_operation.home | default('/home/' ~ host_operation.username)) }}/.ssh"
     state: directory
     owner: "{{ host_operation.username }}"
     group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
@@ -188,7 +217,7 @@
 
 - name: Add public keys from managed person
   ansible.builtin.lineinfile:
-    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    path: "{{ host_operation_effective_home | default(host_operation.home | default('/home/' ~ host_operation.username)) }}/.ssh/authorized_keys"
     line: "{{ item }}"
     create: true
     owner: "{{ host_operation.username }}"
@@ -214,7 +243,7 @@
 
 - name: Append or remove authorized public keys
   ansible.builtin.lineinfile:
-    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    path: "{{ host_operation_effective_home | default(host_operation.home | default('/home/' ~ host_operation.username)) }}/.ssh/authorized_keys"
     line: "{{ item }}"
     state: "{{ 'absent' if host_operation.key_mode == 'remove' else 'present' }}"
     create: true
@@ -229,7 +258,7 @@
 - name: Replace authorized public keys
   ansible.builtin.copy:
     content: "{{ host_operation.public_keys | join('\n') }}\n"
-    dest: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    dest: "{{ host_operation_effective_home | default(host_operation.home | default('/home/' ~ host_operation.username)) }}/.ssh/authorized_keys"
     owner: "{{ host_operation.username }}"
     group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
     mode: "0600"

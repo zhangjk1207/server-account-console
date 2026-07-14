@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,7 +10,6 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.db.models import Host, HostCredential, HostUserState, Job, JobEvent, JobTarget, ManagedUser, ScriptTemplate, SshPublicKey
 from app.db.session import SessionLocal
 from app.services.hosts import _scan_ed25519_key
@@ -111,13 +111,6 @@ def create_job(session: Session, user: ManagedUser, hosts: list[Host], script: S
     return job
 
 
-def _artifact_dir(job_id: str) -> Path:
-    database_url = get_settings().database_url
-    if database_url.startswith("sqlite:///"):
-        return Path(database_url.removeprefix("sqlite:///" )).parent / "ansible-artifacts" / job_id
-    return Path("ansible-artifacts") / job_id
-
-
 def _reset_targets(session: Session, job: Job) -> None:
     for target in session.scalars(select(JobTarget).where(JobTarget.job_id == job.id)):
         target.state = "pending"
@@ -138,11 +131,30 @@ def _set_started(session: Session, job: Job, check: bool) -> None:
     session.commit()
 
 
+def require_current_job_host_credentials(session: Session, job: Job) -> None:
+    hosts = job.request_snapshot.get("hosts")
+    if not isinstance(hosts, list) or not hosts:
+        raise JobStateError("任务目标机器无效")
+    for host_data in hosts:
+        if not isinstance(host_data, dict) or not host_data.get("id"):
+            raise JobStateError("任务目标机器无效")
+        host = session.get(Host, str(host_data["id"]))
+        if host is None or host.archived or host.status != "reachable":
+            raise JobStateError("机器当前不可连接")
+        credential = session.query(HostCredential).filter(HostCredential.host_id == host.id).one_or_none()
+        if credential is None or credential.ssh_verified is not True or credential.sudo_verified is not True:
+            raise JobStateError("连接凭证尚未通过 SSH 和 sudo 验证")
+
+
 def execute_job(session: Session, job: Job, check: bool) -> Job:
     """Synchronous entry point retained for service tests and CLI callers."""
     if not RUNNER_LOCK.acquire(blocking=False):
         raise JobStateError("已有任务正在运行")
     try:
+        if not check:
+            expire_ready_previews(session)
+            ensure_executable(job.state)
+            require_current_job_host_credentials(session, job)
         _set_started(session, job, check)
         return _run_job(session, job, check)
     except JobStateError as error:
@@ -156,6 +168,10 @@ def start_job(session: Session, job: Job, check: bool) -> Job:
     if not RUNNER_LOCK.acquire(blocking=False):
         raise JobStateError("已有任务正在运行")
     try:
+        if not check:
+            expire_ready_previews(session)
+            ensure_executable(job.state)
+            require_current_job_host_credentials(session, job)
         _set_started(session, job, check)
     except Exception:
         RUNNER_LOCK.release()
@@ -179,6 +195,10 @@ def create_and_start_job(
         raise JobStateError("已有任务正在运行")
     try:
         job = create_job(session, user, hosts, script)
+        if not check:
+            expire_ready_previews(session)
+            ensure_executable(job.state)
+            require_current_job_host_credentials(session, job)
         _set_started(session, job, check)
     except Exception:
         RUNNER_LOCK.release()
@@ -295,69 +315,71 @@ def finalize_host_user_states(session: Session, job: Job, *, desired_hash: str) 
 
 
 def _run_job(session: Session, job: Job, check: bool) -> Job:
-    artifact = _artifact_dir(job.id)
-    project = artifact / "project"
-    project.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parents[2] / "ansible"
-    shutil.copytree(source, project, dirs_exist_ok=True)
-
-    task_input = {
-        "job_id": job.id,
-        "user": job.user_snapshot,
-        "request": job.request_snapshot,
-        "script": None if job.script_snapshot is None else {"id": job.script_snapshot["id"], "name": job.script_snapshot["name"], "version": job.script_snapshot["version"]},
-    }
-    known_lines: list[str] = []
-    inventory_hosts: dict[str, dict] = {}
-    sensitive_values: list[str] = []
-    private_key_paths: list[Path] = []
-    credentials_dir = artifact / "credentials"
-    credentials_dir.mkdir(parents=True, exist_ok=True)
-    for host_data in job.request_snapshot["hosts"]:
-        host = Host(name=host_data["name"], address=host_data["address"], port=host_data["port"])
-        fingerprint, line, error = _scan_ed25519_key(host)
-        if error or fingerprint != host_data["fingerprint"] or line is None:
-            _mark_target_failure(session, job, host_data["id"], f"主机 {host_data['name']} 的指纹校验失败")
-            continue
-        stored_host = session.get(Host, host_data["id"])
-        if stored_host is None:
-            _mark_target_failure(session, job, host_data["id"], f"主机 {host_data['name']} 已不存在")
-            continue
-        try:
-            credential = decrypt_host_credential(session, stored_host)
-        except ValueError as error:
-            _mark_target_failure(session, job, host_data["id"], str(error))
-            continue
-        key_path = credentials_dir / f"{host_data['id']}.key"
-        key_path.write_text(credential.private_key, encoding="utf-8")
-        os.chmod(key_path, 0o600)
-        private_key_paths.append(key_path)
-        sensitive_values.extend([credential.private_key, credential.sudo_password])
-        known_lines.append(line)
-        inventory_hosts[host_data["name"]] = {
-            "ansible_host": host_data["address"],
-            "ansible_port": host_data["port"],
-            "ansible_user": host_data["ssh_user"],
-            "ansible_ssh_private_key_file": str(key_path),
-            "ansible_become": True,
-            "ansible_become_password": credential.sudo_password,
+    # ansible-runner serializes inventory, extra variables and its inherited
+    # environment below private_data_dir. The complete tree must be transient.
+    with tempfile.TemporaryDirectory(prefix=f"sync-job-{job.id[:8]}-") as temporary_directory:
+        artifact = Path(temporary_directory)
+        project = artifact / "project"
+        shutil.copytree(source, project)
+        task_input = {
+            "job_id": job.id,
+            "user": job.user_snapshot,
+            "request": job.request_snapshot,
+            "script": None if job.script_snapshot is None else {"id": job.script_snapshot["id"], "name": job.script_snapshot["name"], "version": job.script_snapshot["version"]},
         }
-    session.commit()
-    if not inventory_hosts:
-        raise JobStateError("没有通过主机指纹校验的目标机器")
+        known_lines: list[str] = []
+        inventory_hosts: dict[str, dict] = {}
+        sensitive_values: list[str] = []
+        credentials_dir = artifact / "credentials"
+        credentials_dir.mkdir()
+        for host_data in job.request_snapshot["hosts"]:
+            host = Host(name=host_data["name"], address=host_data["address"], port=host_data["port"])
+            fingerprint, line, error = _scan_ed25519_key(host)
+            if error or fingerprint != host_data["fingerprint"] or line is None:
+                _mark_target_failure(session, job, host_data["id"], f"主机 {host_data['name']} 的指纹校验失败")
+                continue
+            stored_host = session.get(Host, host_data["id"])
+            if stored_host is None or stored_host.archived or stored_host.status != "reachable":
+                _mark_target_failure(session, job, host_data["id"], f"主机 {host_data['name']} 当前不可连接")
+                continue
+            credential_record = session.query(HostCredential).filter(HostCredential.host_id == stored_host.id).one_or_none()
+            if credential_record is None or credential_record.ssh_verified is not True or credential_record.sudo_verified is not True:
+                _mark_target_failure(session, job, host_data["id"], "连接凭证尚未通过 SSH 和 sudo 验证")
+                continue
+            try:
+                credential = decrypt_host_credential(session, stored_host)
+            except ValueError as error:
+                _mark_target_failure(session, job, host_data["id"], str(error))
+                continue
+            key_path = credentials_dir / f"{host_data['id']}.key"
+            key_path.write_text(credential.private_key, encoding="utf-8")
+            os.chmod(key_path, 0o600)
+            sensitive_values.extend([credential.private_key, credential.sudo_password])
+            known_lines.append(line)
+            inventory_hosts[host_data["name"]] = {
+                "ansible_host": host_data["address"],
+                "ansible_port": host_data["port"],
+                "ansible_user": host_data["ssh_user"],
+                "ansible_ssh_private_key_file": str(key_path),
+                "ansible_become": True,
+                "ansible_become_password": credential.sudo_password,
+            }
+        session.commit()
+        if not inventory_hosts:
+            raise JobStateError("没有通过主机指纹校验的目标机器")
 
-    known_hosts = artifact / "known_hosts"
-    known_hosts.write_text("\n".join(known_lines) + "\n", encoding="utf-8")
-    ssh_args = f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o ConnectTimeout=10"
-    for values in inventory_hosts.values():
-        values["ansible_ssh_common_args"] = ssh_args
-        values["ansible_ssh_timeout"] = 300
-    inventory = {"all": {"hosts": inventory_hosts}}
+        known_hosts = artifact / "known_hosts"
+        known_hosts.write_text("\n".join(known_lines) + "\n", encoding="utf-8")
+        ssh_args = f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10"
+        for values in inventory_hosts.values():
+            values["ansible_ssh_common_args"] = ssh_args
+            values["ansible_ssh_timeout"] = 300
+        inventory = {"all": {"hosts": inventory_hosts}}
 
-    def event_handler(event: dict) -> None:
-        apply_runner_events(session, job, [event])
+        def event_handler(event: dict) -> None:
+            apply_runner_events(session, job, [event])
 
-    try:
         result = run_playbook(
             RunnerRequest(
                 artifact,
@@ -373,10 +395,6 @@ def _run_job(session: Session, job: Job, check: bool) -> Job:
             event_handler,
             credentials_dir,
         )
-    finally:
-        for key_path in private_key_paths:
-            key_path.unlink(missing_ok=True)
-        credentials_dir.rmdir()
     failure_message = "Ansible 以非零状态退出，未收到该机器的具体失败事件" if result.rc != 0 else None
     targets = _finish_pending_targets(session, job, failure_message=failure_message)
     failed = any(target.state == "failed" for target in targets)

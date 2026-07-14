@@ -72,7 +72,7 @@
 
 ### 4.3 SSH 密码登录
 
-密码登录状态来自 `sshd -T` 的有效配置。切换操作写入控制台专属的 `/etc/ssh/sshd_config.d/99-server-account-console.conf`，只管理 `PasswordAuthentication yes|no`：
+密码登录状态来自 `sshd -T` 的有效配置。切换操作写入控制台专属的 `/etc/ssh/sshd_config.d/99-server-account-console.conf`，同时管理 `PasswordAuthentication` 与 `KbdInteractiveAuthentication`，避免 PAM 键盘交互仍保留密码通道：
 
 1. 预检目标状态和 sudo 能力；
 2. 写入临时配置，执行 `sshd -t`；
@@ -101,6 +101,7 @@
 - SSH 登录成功但 sudo 失败时，显示两个独立状态，禁止需要 sudo 的操作；
 - SSHD 校验或 reload 失败时，任务目标失败，保留原专属配置；
 - 任一敏感操作失败时，任务事件仅记录操作类型和脱敏错误。
+- Ansible Runner 的 inventory、extra vars、原始事件与进程环境只写入执行期间的临时目录；结束后整体删除，任务记录仅保留脱敏事件。
 
 ## 7. 测试与验收
 

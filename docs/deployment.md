@@ -26,4 +26,4 @@
 4. 首次访问时，在机器页面逐台打开详情，上传无口令的 OpenSSH/PEM 私钥文件和 sudo 密码，然后测试 SSH/sudo。首次测试会要求带外确认 ED25519 指纹；未确认、指纹变化或 sudo 未通过的机器不能成为同步目标。
 5. API 默认每 24 小时创建一次 SQLite 在线备份，保留 14 天；可通过 `BACKUP_INTERVAL_SECONDS` 调整周期。也可执行 `DATABASE_PATH=./runtime/app.db scripts/backup.sh` 立即创建备份。恢复时停止服务并以备份文件替换 `runtime/app.db`。
 
-私钥文件、sudo 密码、`CREDENTIAL_ENCRYPTION_KEY`、`.env`、运行数据、Ansible 产物和备份均不得提交。当前不支持带口令的私钥；应使用只供控制台使用、权限受限的专用密钥。修改 SSH 密码登录会先预检并要求确认，写入后验证 `sshd`；验证或 reload 失败时自动恢复原有片段。
+私钥文件、sudo 密码、`CREDENTIAL_ENCRYPTION_KEY`、`.env`、运行数据和备份均不得提交。Ansible 的原始运行产物只会在执行期间临时存在，结束后自动删除。当前不支持带口令的私钥；应使用只供控制台使用、权限受限的专用密钥。修改 SSH 密码登录会先预检并要求确认，写入后验证 `sshd`；验证或 reload 失败时自动恢复原有片段。

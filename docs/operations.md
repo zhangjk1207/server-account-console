@@ -2,7 +2,8 @@
 
 - 指纹变化：不要确认或执行任务；先通过带外渠道确认目标主机重装或更换，再重新测试并确认新指纹。
 - 凭证验证失败：在机器详情替换私钥文件或 sudo 密码后重新测试。页面、API、任务快照和执行日志都不会回显秘密；`CREDENTIAL_ENCRYPTION_KEY` 必须与写入凭证时保持一致。
+- 任务秘密：Ansible 的 inventory、extra vars、原始事件和进程环境只在执行期间的临时目录存在，结束后整体删除；SQLite 仅保存脱敏后的任务事件。
 - 预检失败：查看任务页日志，修复网络、SSH 或 sudo 后重新发起预检；不执行自动回滚。
 - 脚本模板：仅保存已审查的脚本。每次任务会冻结脚本正文和版本，后续修改不会影响历史记录。
-- SSH 密码登录：只通过机器详情发起预检；确认执行后，控制台写入独立的 `sshd_config.d` 片段、验证并 reload。失败会恢复原片段，已有 SSH 会话不主动中断。
+- SSH 密码登录：只通过机器详情发起预检；确认执行后，控制台写入独立的 `sshd_config.d` 片段，同时设置 `PasswordAuthentication` 与 `KbdInteractiveAuthentication`、验证并 reload。失败会恢复原片段，已有 SSH 会话不主动中断。
 - 监控：API 每五分钟复测已配置凭证的机器并记录 SSH/sudo 状态、延迟和错误；任务运行时会跳过探测。CPU、内存、磁盘和硬件告警建议后续接入 Node Exporter + Prometheus。

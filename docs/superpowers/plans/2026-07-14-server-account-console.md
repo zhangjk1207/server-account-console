@@ -307,7 +307,7 @@ Use Ansible modules for group, user, file, authorized_key, template, and command
 
 - [ ] **Step 4: Implement Runner artifact isolation and event normalization**
 
-Create an artifact directory per job UUID under ignored `ansible-artifacts/`. Translate Ansible events into `{ timestamp, host_id, level, event, message }`; redact any string matching the mounted key path or private-key material before persistence.
+Use an execution-scoped temporary private-data directory. Translate only redacted Ansible events into `{ timestamp, host_id, level, event, message }` before persistence, then delete the complete Runner tree so inventory, extra vars and inherited environment never become artifacts.
 
 - [ ] **Step 5: Re-run idempotence and runner unit tests**
 

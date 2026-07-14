@@ -75,6 +75,7 @@ def test_legacy_fingerprint_probe_does_not_use_a_global_private_key(monkeypatch)
 
         assert result.ssh_ok is True
         assert result.sudo_ok is True
+        assert "IdentitiesOnly=yes" in commands[0]
         assert commands[0][-1] == "true"
         assert commands[1][-1] == "sudo -S -k -p '' true"
     get_settings.cache_clear()

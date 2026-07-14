@@ -14,7 +14,7 @@ Accepted
 
 ## 决策
 
-每台主机保存一份可替换的 SSH 私钥和 sudo 密码。私钥通过文件上传，服务端仅接受无口令的 OpenSSH/PEM 格式；两个字段使用部署环境提供的 Fernet `CREDENTIAL_ENCRYPTION_KEY` 加密后写入 SQLite。任务运行期间才将私钥写为 `0600` 临时文件，并在结束后删除。
+每台主机保存一份可替换的 SSH 私钥和 sudo 密码。私钥通过文件上传，服务端仅接受无口令的 OpenSSH/PEM 格式；两个字段使用部署环境提供的 Fernet `CREDENTIAL_ENCRYPTION_KEY` 加密后写入 SQLite。任务运行期间才将私钥写为 `0600` 临时文件；Ansible Runner 的 inventory、extra vars、事件和进程环境也只存在于同一临时目录，任务结束后整体删除。数据库仅保留已脱敏的任务事件。
 
 主机必须通过指纹确认、SSH 登录和 `sudo -S -k` 验证后，才能同步账户或执行用户/SSH 运维。周期探测复用该主机凭证。秘密不出现在 API 响应、任务快照、事件或日志中。
 

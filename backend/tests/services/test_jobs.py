@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.db.models import Host, HostCredential, Job, JobTarget, ManagedUser, SshPublicKey
 from app.db.session import SessionLocal
 from app.services import jobs
+from app.services.credentials import CredentialCipher
 from app.services.jobs import (
     JobStateError,
     apply_runner_events,
@@ -15,6 +16,7 @@ from app.services.jobs import (
     finalize_host_user_states,
     utc_now,
 )
+from app.services.runner import RunnerResult, redact_event
 
 
 def test_only_ready_preview_can_execute() -> None:
@@ -133,3 +135,64 @@ def test_sync_requires_host_credential_with_verified_ssh_and_sudo() -> None:
 
         with pytest.raises(JobStateError, match="连接凭证尚未通过 SSH 和 sudo 验证"):
             jobs.create_job(session, user, [host], None)
+
+
+def test_sync_execution_rechecks_current_host_credential(monkeypatch) -> None:
+    with SessionLocal() as session:
+        host = Host(name="lab-execute", address="192.0.2.21", status="reachable", host_key_fingerprint="SHA256:known")
+        job = Job(
+            kind="sync",
+            state="ready_to_confirm",
+            request_snapshot={"hosts": [{"id": "placeholder", "name": host.name}]},
+        )
+        session.add_all([host, job])
+        session.flush()
+        job.request_snapshot = {"hosts": [{"id": host.id, "name": host.name}]}
+        session.add(HostCredential(host_id=host.id, private_key_ciphertext="cipher", sudo_password_ciphertext="cipher", ssh_verified=True, sudo_verified=False))
+        session.commit()
+        monkeypatch.setattr(jobs, "_launch_worker", lambda *_args: (_ for _ in ()).throw(AssertionError("凭证失效时不得执行")))
+
+        with pytest.raises(JobStateError, match="连接凭证尚未通过 SSH 和 sudo 验证"):
+            jobs.start_job(session, job, check=False)
+
+        assert session.get(Job, job.id).state == "ready_to_confirm"
+
+
+def test_sync_runner_private_data_is_removed_after_persisting_redacted_events(monkeypatch, tmp_path) -> None:
+    with SessionLocal() as session:
+        host = Host(name="lab-transient", address="192.0.2.23", status="reachable", host_key_fingerprint="SHA256:known")
+        user = ManagedUser(username="alice", home="/home/alice")
+        session.add_all([host, user])
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add(HostCredential(host_id=host.id, private_key_ciphertext=cipher.encrypt("private-key"), sudo_password_ciphertext=cipher.encrypt("sudo-secret"), ssh_verified=True, sudo_verified=True))
+        job = Job(
+            kind="sync",
+            state="running",
+            user_snapshot={"username": "alice"},
+            request_snapshot={"user_id": user.id, "hosts": [{"id": host.id, "name": host.name, "address": host.address, "port": 22, "ssh_user": "ops", "fingerprint": "SHA256:known"}]},
+            script_snapshot=None,
+        )
+        session.add(job)
+        session.flush()
+        session.add(JobTarget(job_id=job.id, host_id=host.id, state="running"))
+        session.commit()
+        roots = []
+
+        monkeypatch.setattr(jobs, "_scan_ed25519_key", lambda _host: ("SHA256:known", "lab-transient ssh-ed25519 AAAA", None))
+
+        def fake_run(request, event_handler, key_path):
+            roots.append(request.private_data_dir)
+            leaked = request.private_data_dir / "env" / "extravars"
+            leaked.parent.mkdir()
+            leaked.write_text("sudo-secret\nprivate-key", encoding="utf-8")
+            event_handler(redact_event({"event": "runner_on_ok", "stdout": "sudo-secret"}, key_path, sensitive_values=request.sensitive_values))
+            return RunnerResult(status="successful", rc=0, events=[])
+
+        monkeypatch.setattr(jobs, "run_playbook", fake_run)
+
+        result = jobs._run_job(session, job, check=False)
+
+        assert result.state == "succeeded"
+        assert roots and not roots[0].exists()
+        assert "sudo-secret" not in "\n".join(event.message for event in session.scalars(select(jobs.JobEvent).where(jobs.JobEvent.job_id == job.id)))

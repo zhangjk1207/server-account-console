@@ -1,7 +1,6 @@
 from pathlib import Path
 import json
 import os
-import sys
 
 from app.services import runner
 from app.services.runner import RunnerRequest, redact_event, run_playbook
@@ -42,6 +41,15 @@ def test_redacts_configured_sensitive_values_recursively() -> None:
 
 def test_runner_uses_the_current_python_environment_for_ansible(monkeypatch, tmp_path) -> None:
     captured: dict = {}
+    ansible_bin = tmp_path / "venv-bin"
+    ansible_bin.mkdir()
+    (ansible_bin / "ansible-playbook").touch()
+    actual_bin = tmp_path / "actual-bin"
+    actual_bin.mkdir()
+    actual_python = actual_bin / "python"
+    actual_python.touch()
+    (ansible_bin / "python").symlink_to(actual_python)
+    monkeypatch.setattr(runner.sys, "executable", str(ansible_bin / "python"))
 
     class Result:
         status = "successful"
@@ -59,7 +67,7 @@ def test_runner_uses_the_current_python_environment_for_ansible(monkeypatch, tmp
         tmp_path / "credential.key",
     )
 
-    assert captured["envvars"]["PATH"].split(os.pathsep)[0] == str(Path(sys.argv[0]).resolve().parent)
+    assert captured["envvars"]["PATH"].split(os.pathsep)[0] == str(ansible_bin)
 
 
 def test_preserves_structured_inventory_values_that_match_a_sudo_password() -> None:

@@ -64,6 +64,41 @@ def test_fingerprint_confirmation_rejects_a_key_that_changed_since_test(monkeypa
     asyncio.run(scenario())
 
 
+def test_fingerprint_rotation_can_be_confirmed_after_a_fresh_test(monkeypatch) -> None:
+    monkeypatch.setattr(hosts_api, "_scan_ed25519_key", lambda _host: ("SHA256:rotated", "lab-01 ssh-ed25519 AAAA", None))
+    monkeypatch.setattr(
+        hosts_api,
+        "probe_host",
+        lambda _host: HostProbeResult(fingerprint="SHA256:rotated", reachable=False, latency_ms=12, error="请先配置并验证主机连接凭证", known_host_line="lab-01 ssh-ed25519 AAAA"),
+    )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            host = await client.post("/api/hosts", json=HOST_PAYLOAD, headers={"X-CSRF-Token": token})
+            host_id = host.json()["id"]
+            with SessionLocal() as session:
+                stored = session.get(hosts_api.Host, host_id)
+                assert stored is not None
+                stored.host_key_fingerprint = "SHA256:old"
+                stored.status = "fingerprint_changed"
+                session.commit()
+
+            response = await client.post(
+                f"/api/hosts/{host_id}/confirm-fingerprint",
+                json={"fingerprint": "SHA256:rotated"},
+                headers={"X-CSRF-Token": token},
+            )
+
+            assert response.status_code == 200
+            assert response.json()["host_key_fingerprint"] == "SHA256:rotated"
+            assert response.json()["status"] == "unreachable"
+
+    asyncio.run(scenario())
+
+
 def test_fingerprint_confirmation_without_a_host_credential_keeps_the_host_unreachable(monkeypatch) -> None:
     monkeypatch.setattr(hosts_api, "_scan_ed25519_key", lambda _host: ("SHA256:current", "lab-01 ssh-ed25519 AAAA", None))
     monkeypatch.setattr(

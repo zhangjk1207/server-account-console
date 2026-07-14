@@ -83,8 +83,6 @@ def test_host(host_id: str, session: Session = Depends(get_db_session)) -> HostP
 @router.post("/{host_id}/confirm-fingerprint", response_model=HostRead, dependencies=[Depends(require_csrf)])
 def confirm_fingerprint(host_id: str, payload: FingerprintConfirmation, session: Session = Depends(get_db_session)) -> Host:
     host = require_host(session, host_id)
-    if host.status == "fingerprint_changed":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="主机指纹已变化，请先重新测试连接")
     fingerprint, _, error = _scan_ed25519_key(host)
     if error or fingerprint != payload.fingerprint:
         host.status = "fingerprint_changed"

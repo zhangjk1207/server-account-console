@@ -1,4 +1,5 @@
 from cryptography.fernet import Fernet
+import pytest
 
 from app.core.config import get_settings
 from app.db.models import Host, HostCredential, Job, ManagedUser, SshPublicKey
@@ -16,7 +17,7 @@ from app.services.host_operations import (
     list_host_users,
     parse_inventory,
 )
-from app.services.jobs import RUNNER_LOCK
+from app.services.jobs import JobStateError, RUNNER_LOCK
 from app.services.runner import RunnerResult
 
 
@@ -41,13 +42,14 @@ def test_parse_inventory_filters_system_users_and_never_exposes_shadow() -> None
                 "daemon": ["x", "1", "1", "daemon", "/usr/sbin", "/usr/sbin/nologin"],
                 "alice": ["x", "1001", "1001", "Alice", "/home/alice", "/bin/bash"],
             },
-            "getent_group": {"developers": ["x", "1002", "alice"]},
+            "getent_group": {"alice": ["x", "1001", ""], "developers": ["x", "1002", "alice"]},
         }
     )
 
     assert len(users) == 1
     assert users[0].username == "alice"
     assert users[0].uid == 1001
+    assert users[0].primary_group == "alice"
     assert users[0].groups == ["developers"]
     assert "password" not in users[0].model_dump()
     assert "shadow" not in users[0].model_dump()
@@ -119,20 +121,61 @@ def test_list_host_users_parses_fixed_playbook_debug_result(monkeypatch) -> None
 
 
 def test_password_reset_execution_keeps_new_password_out_of_job_snapshot(monkeypatch) -> None:
-    with SessionLocal() as session:
-        job = Job(kind="host_user_operation", state="ready_to_confirm", request_snapshot={"operation": {"action": "reset_password", "username": "alice"}})
-        session.add(job)
-        session.commit()
-        launched: list[tuple[str, bool, str | None]] = []
-        monkeypatch.setattr(host_operations, "_launch_operation_worker", lambda job_id, check, new_password=None: launched.append((job_id, check, new_password)))
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            host = Host(name="lab-reset", address="192.0.2.20", status="reachable")
+            session.add(host)
+            session.flush()
+            add_verified_credential(session, host)
+            job = Job(
+                kind="host_user_operation",
+                state="ready_to_confirm",
+                request_snapshot={"hosts": [{"id": host.id}], "operation": {"action": "reset_password", "username": "alice"}},
+            )
+            session.add(job)
+            session.commit()
+            launched: list[tuple[str, bool, str | None]] = []
+            monkeypatch.setattr(host_operations, "_launch_operation_worker", lambda job_id, check, new_password=None: launched.append((job_id, check, new_password)))
 
-        result = execute_host_operation(session, job, new_password="one-time-secret")
+            result = execute_host_operation(session, job, new_password="one-time-secret")
 
-        assert result.state == "running"
-        assert "one-time-secret" not in str(result.request_snapshot)
-        assert launched == [(job.id, False, "one-time-secret")]
-        if RUNNER_LOCK.locked():
-            RUNNER_LOCK.release()
+            assert result.state == "running"
+            assert "one-time-secret" not in str(result.request_snapshot)
+            assert launched == [(job.id, False, "one-time-secret")]
+            if RUNNER_LOCK.locked():
+                RUNNER_LOCK.release()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_host_operation_execution_rechecks_current_host_credential(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            host = Host(name="lab-stale", address="192.0.2.22", status="reachable")
+            session.add(host)
+            session.flush()
+            add_verified_credential(session, host)
+            credential = session.query(HostCredential).filter(HostCredential.host_id == host.id).one()
+            credential.sudo_verified = False
+            job = Job(
+                kind="host_user_operation",
+                state="ready_to_confirm",
+                request_snapshot={"hosts": [{"id": host.id}], "operation": {"action": "lock", "username": "alice"}},
+            )
+            session.add(job)
+            session.commit()
+            monkeypatch.setattr(host_operations, "_launch_operation_worker", lambda *_args: (_ for _ in ()).throw(AssertionError("凭证失效时不得执行")))
+
+            with pytest.raises(JobStateError, match="连接凭证尚未通过 SSH 和 sudo 验证"):
+                execute_host_operation(session, job)
+
+            assert session.get(Job, job.id).state == "ready_to_confirm"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_list_host_user_keys_parses_public_keys(monkeypatch) -> None:

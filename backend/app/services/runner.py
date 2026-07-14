@@ -60,7 +60,9 @@ def redact_event(event: dict, key_path: Path, *, sensitive_values: list[str] | t
 def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_path: Path) -> RunnerResult:
     events: list[dict] = []
     runner_script_bin = Path(sys.argv[0]).resolve().parent
-    python_bin = Path(sys.executable).resolve().parent
+    # sys.executable commonly points at a virtualenv symlink. Resolving it loses
+    # the virtualenv's bin directory, where ansible-playbook is installed.
+    python_bin = Path(sys.executable).parent
     executable = next(
         (
             directory / "ansible-playbook"
@@ -69,7 +71,8 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
         ),
         None,
     )
-    ansible_bin = str(executable.parent if executable is not None else Path(shutil.which("ansible-playbook") or sys.executable).resolve().parent)
+    discovered = shutil.which("ansible-playbook")
+    ansible_bin = str(executable.parent if executable is not None else Path(discovered).parent if discovered else python_bin)
     runner_path = os.environ.get("PATH", "")
 
     def handle_event(event: dict) -> bool:
