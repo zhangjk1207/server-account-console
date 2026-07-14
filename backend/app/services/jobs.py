@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.models import Host, Job, JobEvent, JobTarget, ManagedUser, ScriptTemplate, SshPublicKey
 from app.services.runner import RunnerRequest, run_playbook
+from app.services.hosts import _scan_ed25519_key
+
+RUNNER_LOCK = threading.Lock()
 
 class JobStateError(ValueError):
     pass
@@ -34,15 +38,33 @@ def create_job(session: Session, user: ManagedUser, hosts: list[Host], script: S
 
 def execute_job(session: Session, job: Job, check: bool) -> Job:
     if not check: ensure_executable(job.state)
-    job.state = "preview_running" if check else "running"; job.started_at = utc_now(); session.commit()
+    if not RUNNER_LOCK.acquire(blocking=False):
+        raise JobStateError("已有任务正在运行")
     artifact = Path("ansible-artifacts") / job.id
+    try:
+        job.state = "preview_running" if check else "running"; job.started_at = utc_now(); session.commit()
+        return _execute_locked_job(session, job, check, artifact)
+    finally:
+        RUNNER_LOCK.release()
+
+def _execute_locked_job(session: Session, job: Job, check: bool, artifact: Path) -> Job:
     project = artifact / "project"; project.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parents[2] / "ansible"; shutil.copytree(source, project, dirs_exist_ok=True)
     task_input = artifact / "task-input.json"; task_input.write_text(json.dumps(job.request_snapshot), encoding="utf-8")
     post_script = ""
     if job.script_snapshot:
         path = artifact / "post-script.sh"; path.write_text(job.script_snapshot["body"], encoding="utf-8"); path.chmod(0o700); post_script = str(path)
-    inventory = {"all": {"hosts": {host["name"]: {"ansible_host": host["address"], "ansible_port": host["port"], "ansible_user": host["ssh_user"], "ansible_ssh_private_key_file": get_settings().control_ssh_key_path} for host in job.request_snapshot["hosts"]}}}
+    known_hosts = artifact / "known_hosts"
+    known_lines = []
+    for host_data in job.request_snapshot["hosts"]:
+        host = Host(name=host_data["name"], address=host_data["address"], port=host_data["port"])
+        fingerprint, line, error = _scan_ed25519_key(host)
+        if error or fingerprint != host_data["fingerprint"] or line is None:
+            raise JobStateError(f"主机 {host_data['name']} 的指纹校验失败")
+        known_lines.append(line)
+    known_hosts.write_text("\n".join(known_lines) + "\n", encoding="utf-8")
+    ssh_args = f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes"
+    inventory = {"all": {"hosts": {host["name"]: {"ansible_host": host["address"], "ansible_port": host["port"], "ansible_user": host["ssh_user"], "ansible_ssh_private_key_file": get_settings().control_ssh_key_path, "ansible_ssh_common_args": ssh_args} for host in job.request_snapshot["hosts"]}}}
     def event_handler(event: dict) -> None:
         message = str(event.get("stdout", "")); host_name = event.get("event_data", {}).get("host"); host_id = next((h["id"] for h in job.request_snapshot["hosts"] if h["name"] == host_name), None)
         if message: session.add(JobEvent(job_id=job.id, host_id=host_id, level="error" if "failed" in message.lower() else "info", message=message)); session.commit()
