@@ -6,6 +6,7 @@ secrets/
 keys/
 
 # Runtime data and logs
+.worktrees/
 runtime/
 data/
 logs/
