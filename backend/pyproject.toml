@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Internal Linux account management control plane"
 requires-python = ">=3.13"
 dependencies = [
+  "alembic>=1.14",
+  "bcrypt>=4.0",
   "fastapi>=0.115",
+  "itsdangerous>=2.2",
+  "pydantic-settings>=2.0",
+  "sqlalchemy>=2.0",
   "uvicorn[standard]>=0.30",
 ]
 
