@@ -12,9 +12,11 @@ dependencies = [
   "ansible-core>=2.18",
   "ansible-runner>=2.4",
   "bcrypt>=4.0",
+  "cryptography>=43",
   "fastapi>=0.115",
   "itsdangerous>=2.2",
   "pydantic-settings>=2.0",
+  "python-multipart>=0.0.9",
   "sqlalchemy>=2.0",
   "uvicorn[standard]>=0.30",
 ]

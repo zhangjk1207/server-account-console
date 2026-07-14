@@ -37,6 +37,19 @@ class Host(TimestampedRecord, Base):
     last_probe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class HostCredential(TimestampedRecord, Base):
+    __tablename__ = "host_credentials"
+    __table_args__ = (UniqueConstraint("host_id", name="uq_host_credential_host"),)
+
+    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id", ondelete="CASCADE"), index=True)
+    private_key_ciphertext: Mapped[str] = mapped_column(Text)
+    sudo_password_ciphertext: Mapped[str] = mapped_column(Text)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ssh_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    sudo_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ManagedUser(TimestampedRecord, Base):
     __tablename__ = "managed_users"
 

@@ -6,6 +6,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.host_credentials import router as host_credentials_router
 from app.api.hosts import router as hosts_router
 from app.api.jobs import router as jobs_router
 from app.api.scripts import router as scripts_router
@@ -53,6 +54,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(hosts_router, prefix="/api")
+app.include_router(host_credentials_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(scripts_router, prefix="/api")
