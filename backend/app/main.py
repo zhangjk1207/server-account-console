@@ -1,3 +1,6 @@
+import asyncio
+from contextlib import asynccontextmanager, suppress
+
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -8,8 +11,29 @@ from app.api.jobs import router as jobs_router
 from app.api.scripts import router as scripts_router
 from app.api.users import router as users_router
 from app.core.config import get_settings
+from app.db.session import SessionLocal
+from app.services.jobs import RUNNER_LOCK
+from app.services.probes import probe_all_hosts
 
-app = FastAPI(title="Server Account Console")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    settings = get_settings()
+
+    async def probe_loop() -> None:
+        while True:
+            await asyncio.to_thread(probe_all_hosts, SessionLocal, is_job_running=RUNNER_LOCK.locked)
+            await asyncio.sleep(settings.host_probe_interval_seconds)
+
+    task = asyncio.create_task(probe_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+app = FastAPI(title="Server Account Console", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=get_settings().session_secret,

@@ -44,6 +44,13 @@ def execute_job(session: Session, job: Job, check: bool) -> Job:
     try:
         job.state = "preview_running" if check else "running"; job.started_at = utc_now(); session.commit()
         return _execute_locked_job(session, job, check, artifact)
+    except JobStateError as error:
+        job.finished_at = utc_now()
+        job.state = "preview_failed" if check else "partial_failed"
+        session.add(JobEvent(job_id=job.id, host_id=None, level="error", message=str(error)))
+        session.commit()
+        session.refresh(job)
+        return job
     finally:
         RUNNER_LOCK.release()
 
