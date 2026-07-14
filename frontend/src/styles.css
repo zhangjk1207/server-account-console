@@ -1,0 +1,39 @@
+:root {
+  color: #1d2a2d;
+  background: #eef1ed;
+  font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 72px max(32px, calc((100vw - 1120px) / 2));
+  background-image: linear-gradient(#d8dfd8 1px, transparent 1px), linear-gradient(90deg, #d8dfd8 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.eyebrow {
+  color: #50756b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+h1 {
+  margin: 12px 0;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.description {
+  max-width: 540px;
+  line-height: 1.7;
+}

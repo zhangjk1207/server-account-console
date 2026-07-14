@@ -6,7 +6,11 @@
 
 ## 设计
 
-完整的初版需求与技术方案见 [设计文档](docs/superpowers/specs/2026-07-14-server-account-console-design.md)。
+完整的初版需求与技术方案见 [设计文档](docs/superpowers/specs/2026-07-14-server-account-console-design.md)。实施分解见 [实施计划](docs/superpowers/plans/2026-07-14-server-account-console.md)。
+
+## 开发环境
+
+后端要求 Python 3.13，前端要求 Node.js 22。复制 `.env.example` 到 `.env` 后，设置管理员密码哈希、随机会话密钥和控制 SSH 私钥路径。运行 `docker compose up --build` 后，从 `http://localhost:8080` 访问控制台。
 
 ## 计划技术栈
 
