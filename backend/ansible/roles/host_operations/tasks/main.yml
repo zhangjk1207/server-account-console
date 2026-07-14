@@ -1,0 +1,141 @@
+- name: Collect local user facts
+  ansible.builtin.getent:
+    database: "{{ item }}"
+  loop:
+    - passwd
+    - group
+  when: host_operation.action | default('inspect') == 'inspect'
+
+- name: Emit local user facts
+  ansible.builtin.debug:
+    msg:
+      getent_passwd: "{{ getent_passwd }}"
+      getent_group: "{{ getent_group }}"
+  when: host_operation.action | default('inspect') == 'inspect'
+
+- name: Load selected user passwd entry for key inspection
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ host_operation.username }}"
+  when: host_operation.action | default('') == 'inspect_keys'
+
+- name: Read selected user authorized keys
+  ansible.builtin.slurp:
+    src: "{{ getent_passwd[host_operation.username][4] }}/.ssh/authorized_keys"
+  register: inspected_authorized_keys
+  failed_when: false
+  when: host_operation.action | default('') == 'inspect_keys'
+
+- name: Emit selected user authorized keys
+  ansible.builtin.debug:
+    msg:
+      authorized_keys: "{{ inspected_authorized_keys.content | default('') | b64decode }}"
+  when: host_operation.action | default('') == 'inspect_keys'
+
+- name: Ensure primary group exists for user update
+  ansible.builtin.group:
+    name: "{{ host_operation.primary_group }}"
+    state: present
+  when:
+    - host_operation.action == 'upsert'
+    - host_operation.primary_group is defined
+
+- name: Ensure supplemental groups exist for user update
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ host_operation.groups | default([]) }}"
+  when: host_operation.action == 'upsert'
+
+- name: Create or update local user
+  ansible.builtin.user:
+    name: "{{ host_operation.username }}"
+    state: present
+    group: "{{ host_operation.primary_group | default(omit) }}"
+    groups: "{{ host_operation.groups | default(omit) }}"
+    shell: "{{ host_operation.shell | default(omit) }}"
+    home: "{{ host_operation.home | default(omit) }}"
+    expires: "{{ host_operation.expires_at | default(omit) }}"
+  when: host_operation.action == 'upsert'
+
+- name: Lock or unlock local user
+  ansible.builtin.user:
+    name: "{{ host_operation.username }}"
+    password_lock: "{{ host_operation.action == 'lock' }}"
+  when: host_operation.action in ['lock', 'unlock']
+
+- name: Set one-time local user password
+  ansible.builtin.command:
+    cmd: chpasswd
+    stdin: "{{ host_operation_new_password }}"
+  no_log: true
+  when: host_operation.action == 'reset_password'
+
+- name: Delete local user
+  ansible.builtin.user:
+    name: "{{ host_operation.username }}"
+    state: absent
+    remove: "{{ host_operation.remove_home | default(false) }}"
+  when: host_operation.action == 'delete'
+
+- name: Ensure SSH directory for public key operation
+  ansible.builtin.file:
+    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh"
+    state: directory
+    owner: "{{ host_operation.username }}"
+    group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
+    mode: "0700"
+  when:
+    - host_operation.action in ['keys', 'upsert']
+    - host_operation.public_keys | default([]) | length > 0
+
+- name: Add public keys from managed person
+  ansible.builtin.lineinfile:
+    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    line: "{{ item }}"
+    create: true
+    owner: "{{ host_operation.username }}"
+    group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
+    mode: "0600"
+  loop: "{{ host_operation.public_keys | default([]) }}"
+  when:
+    - host_operation.action == 'upsert'
+    - host_operation.public_keys | default([]) | length > 0
+
+- name: Configure sudo policy for user update
+  ansible.builtin.template:
+    src: managed-sudoers.j2
+    dest: "/etc/sudoers.d/server-account-{{ host_operation.username }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  when:
+    - host_operation.action == 'upsert'
+    - host_operation.sudo_rule is defined
+    - host_operation.sudo_rule | length > 0
+
+- name: Append or remove authorized public keys
+  ansible.builtin.lineinfile:
+    path: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    line: "{{ item }}"
+    state: "{{ 'absent' if host_operation.key_mode == 'remove' else 'present' }}"
+    create: true
+    owner: "{{ host_operation.username }}"
+    group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
+    mode: "0600"
+  loop: "{{ host_operation.public_keys | default([]) }}"
+  when:
+    - host_operation.action == 'keys'
+    - host_operation.key_mode in ['append', 'remove']
+
+- name: Replace authorized public keys
+  ansible.builtin.copy:
+    content: "{{ host_operation.public_keys | join('\n') }}\n"
+    dest: "{{ host_operation.home | default('/home/' ~ host_operation.username) }}/.ssh/authorized_keys"
+    owner: "{{ host_operation.username }}"
+    group: "{{ host_operation.primary_group | default(host_operation.username, true) }}"
+    mode: "0600"
+  when:
+    - host_operation.action == 'keys'
+    - host_operation.key_mode == 'replace'

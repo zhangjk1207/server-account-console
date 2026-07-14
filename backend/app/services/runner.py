@@ -16,6 +16,7 @@ class RunnerRequest:
     inventory: dict
     extravars: dict
     check: bool
+    playbook: str = "playbook.yml"
     sensitive_values: tuple[str, ...] = ()
     timeout: int = 1200
     forks: int = 5
@@ -56,7 +57,7 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
 
     result = ansible_runner.run(
         private_data_dir=str(request.private_data_dir),
-        playbook="playbook.yml",
+        playbook=request.playbook,
         inventory=request.inventory,
         extravars=request.extravars,
         event_handler=handle_event,

@@ -1,0 +1,202 @@
+from cryptography.fernet import Fernet
+
+from app.core.config import get_settings
+from app.db.models import Host, HostCredential, Job, ManagedUser, SshPublicKey
+from app.db.session import SessionLocal
+from app.schemas.host_operation import HostUserOperation
+from app.services.credentials import CredentialCipher
+from app.services import host_operations
+from app.services.host_operations import create_host_operation_preview, execute_host_operation, list_host_user_keys, list_host_users, parse_inventory
+from app.services.runner import RunnerResult
+from app.services.jobs import RUNNER_LOCK
+
+
+def test_parse_inventory_filters_system_users_and_never_exposes_shadow() -> None:
+    users = parse_inventory(
+        {
+            "getent_passwd": {
+                "daemon": ["x", "1", "1", "daemon", "/usr/sbin", "/usr/sbin/nologin"],
+                "alice": ["x", "1001", "1001", "Alice", "/home/alice", "/bin/bash"],
+            },
+            "getent_group": {"developers": ["x", "1002", "alice"]},
+        }
+    )
+
+    assert len(users) == 1
+    assert users[0].username == "alice"
+    assert users[0].uid == 1001
+    assert users[0].groups == ["developers"]
+    assert "password" not in users[0].model_dump()
+    assert "shadow" not in users[0].model_dump()
+
+
+def test_preview_snapshot_excludes_one_time_password(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with SessionLocal() as session:
+        host = Host(name="lab-01", address="192.0.2.10", status="reachable")
+        session.add(host)
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add(
+            HostCredential(
+                host_id=host.id,
+                private_key_ciphertext=cipher.encrypt("private"),
+                sudo_password_ciphertext=cipher.encrypt("sudo"),
+                ssh_verified=True,
+                sudo_verified=True,
+            )
+        )
+        session.commit()
+
+        job = create_host_operation_preview(
+            session,
+            host,
+            HostUserOperation(action="reset_password", username="alice"),
+        )
+
+        assert job.kind == "host_user_operation"
+        assert job.request_snapshot["operation"] == {"action": "reset_password", "username": "alice", "remove_home": False}
+        assert "new_password" not in str(job.request_snapshot)
+    get_settings.cache_clear()
+
+
+def test_host_operation_preview_starts_a_background_preflight(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with SessionLocal() as session:
+        host = Host(name="lab-02", address="192.0.2.11", status="reachable")
+        session.add(host)
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add(
+            HostCredential(
+                host_id=host.id,
+                private_key_ciphertext=cipher.encrypt("private"),
+                sudo_password_ciphertext=cipher.encrypt("sudo"),
+                ssh_verified=True,
+                sudo_verified=True,
+            )
+        )
+        session.commit()
+        launched: list[tuple[str, bool]] = []
+        monkeypatch.setattr(host_operations, "_launch_operation_worker", lambda job_id, check: launched.append((job_id, check)))
+
+        try:
+            job = host_operations.create_and_start_host_operation(session, host, HostUserOperation(action="lock", username="alice"))
+
+            assert job.state == "preview_running"
+            assert launched == [(job.id, True)]
+        finally:
+            if RUNNER_LOCK.locked():
+                RUNNER_LOCK.release()
+    get_settings.cache_clear()
+
+
+def test_list_host_users_parses_fixed_playbook_debug_result(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with SessionLocal() as session:
+        host = Host(name="lab-03", address="192.0.2.12", status="reachable", host_key_fingerprint="SHA256:known")
+        session.add(host)
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add(
+            HostCredential(
+                host_id=host.id,
+                private_key_ciphertext=cipher.encrypt("private"),
+                sudo_password_ciphertext=cipher.encrypt("sudo"),
+                ssh_verified=True,
+                sudo_verified=True,
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(
+            host_operations,
+            "_run_user_inventory",
+            lambda _session, _host: RunnerResult(
+                status="successful",
+                rc=0,
+                events=[{"event_data": {"res": {"msg": {"getent_passwd": {"alice": ["x", "1001", "1001", "", "/home/alice", "/bin/bash"]}, "getent_group": {}}}}}],
+            ),
+        )
+
+        users = list_host_users(session, host)
+
+        assert [user.username for user in users] == ["alice"]
+    get_settings.cache_clear()
+
+
+def test_password_reset_execution_keeps_new_password_out_of_job_snapshot(monkeypatch) -> None:
+    with SessionLocal() as session:
+        job = Job(
+            kind="host_user_operation",
+            state="ready_to_confirm",
+            request_snapshot={"operation": {"action": "reset_password", "username": "alice"}},
+        )
+        session.add(job)
+        session.commit()
+        launched: list[tuple[str, bool, str | None]] = []
+        monkeypatch.setattr(host_operations, "_launch_operation_worker", lambda job_id, check, new_password=None: launched.append((job_id, check, new_password)))
+
+        result = execute_host_operation(session, job, new_password="one-time-secret")
+
+        assert result.state == "running"
+        assert "one-time-secret" not in str(result.request_snapshot)
+        assert launched == [(job.id, False, "one-time-secret")]
+        if RUNNER_LOCK.locked():
+            RUNNER_LOCK.release()
+
+
+def test_list_host_user_keys_parses_public_keys(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+
+
+def test_managed_person_operation_expands_profile_and_enabled_public_keys(monkeypatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    get_settings.cache_clear()
+    with SessionLocal() as session:
+        host = Host(name="lab-05", address="192.0.2.14", status="reachable")
+        user = ManagedUser(username="alice", primary_group="developers", groups=["docker"], shell="/bin/zsh", home="/srv/alice", sudo_rule="ALL=(ALL) NOPASSWD:ALL")
+        session.add_all([host, user])
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add_all([
+            HostCredential(host_id=host.id, private_key_ciphertext=cipher.encrypt("private"), sudo_password_ciphertext=cipher.encrypt("sudo"), ssh_verified=True, sudo_verified=True),
+            SshPublicKey(managed_user_id=user.id, public_key="ssh-ed25519 AAAA enabled", fingerprint="SHA256:enabled", comment="enabled", enabled=True),
+            SshPublicKey(managed_user_id=user.id, public_key="ssh-ed25519 AAAA disabled", fingerprint="SHA256:disabled", comment="disabled", enabled=False),
+        ])
+        session.commit()
+
+        job = create_host_operation_preview(session, host, HostUserOperation(action="upsert", username="alice", managed_user_id=user.id))
+
+        operation = job.request_snapshot["operation"]
+        assert operation["primary_group"] == "developers"
+        assert operation["groups"] == ["docker"]
+        assert operation["shell"] == "/bin/zsh"
+        assert operation["home"] == "/srv/alice"
+        assert operation["public_keys"] == ["ssh-ed25519 AAAA enabled"]
+    get_settings.cache_clear()
+    with SessionLocal() as session:
+        host = Host(name="lab-04", address="192.0.2.13", status="reachable", host_key_fingerprint="SHA256:known")
+        session.add(host)
+        session.flush()
+        cipher = CredentialCipher.from_settings()
+        session.add(HostCredential(host_id=host.id, private_key_ciphertext=cipher.encrypt("private"), sudo_password_ciphertext=cipher.encrypt("sudo"), ssh_verified=True, sudo_verified=True))
+        session.commit()
+        monkeypatch.setattr(
+            host_operations,
+            "_run_key_inventory",
+            lambda _session, _host, _username: RunnerResult(
+                status="successful",
+                rc=0,
+                events=[{"event_data": {"res": {"msg": {"authorized_keys": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAGkvVkSy22CofC/G8JlQVqBe1HMv/b8MWBNkdQ1spaR alice@laptop\n"}}}}],
+            ),
+        )
+
+        keys = list_host_user_keys(session, host, "alice")
+
+        assert keys[0].comment == "alice@laptop"
+        assert keys[0].fingerprint.startswith("SHA256:")
+    get_settings.cache_clear()
