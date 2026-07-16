@@ -54,6 +54,14 @@
     dest: "/home/{{ access_grant.username }}"
     state: link
     force: false
+  # Check mode cannot materialize the source directory, so link safety is
+  # established by the stat/assert tasks above and creation waits for execute.
+  when: not ansible_check_mode
+
+- name: Record controlled logical home link during preview
+  ansible.builtin.debug:
+    msg: "正式执行时将创建 /home/{{ access_grant.username }} -> {{ access_grant.data_directory }}"
+  when: ansible_check_mode
 
 - name: Ensure SSH directory exists on data disk
   ansible.builtin.file:

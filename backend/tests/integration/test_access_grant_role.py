@@ -11,6 +11,7 @@ def test_access_grant_role_creates_only_a_controlled_home_link() -> None:
     assert "access_grant.data_directory" in provision
     assert "state: link" in provision
     assert "force: false" in provision
+    assert "not ansible_check_mode" in provision
     assert "Replace authorized keys with the enabled member key set" in provision
     assert "access_grant_user.public_keys | join" in provision
 
