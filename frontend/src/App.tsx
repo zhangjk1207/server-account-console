@@ -73,6 +73,16 @@ function MemberWorkbench({ user, hosts, templates, onError, onJob }:{ user:User;
   const defaultTemplate = templates.find((template) => template.enabled)?.id || "";
   const loadDetail = async () => { try { const [nextKeys, nextGrants] = await Promise.all([api<SshKey[]>(`/users/${user.id}/keys`), api<AccessGrant[]>(`/users/${user.id}/access-grants`)]); setKeys(nextKeys); setGrants(nextGrants); setRows((current) => Object.fromEntries(hosts.map((host) => [host.id, current[host.id] || { selected:false, username:user.username, permissionTemplateId:defaultTemplate, groupsOverride:"", sudoRuleOverride:"", advanced:false }]))); } catch (cause) { onError(message(cause, "无法读取成员授权信息")); } };
   useEffect(() => { void loadDetail(); }, [user.id, hosts.length, templates.length]);
+  useEffect(() => {
+    if (preparedJob?.state !== "preview_running") return;
+    let disposed = false;
+    const refresh = () => void api<Job>(`/jobs/${preparedJob.id}`).then((job) => {
+      if (!disposed) { setPreparedJob(job); onJob(job); }
+    }).catch((cause) => !disposed && onError(message(cause, "无法读取预检状态")));
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [preparedJob?.id, preparedJob?.state, onError, onJob]);
   const changeRow = (hostId:string, update:Partial<GrantRow>) => setRows((current) => ({ ...current, [hostId]:{ ...current[hostId], ...update } }));
   const provisionRows = hosts.filter((host) => rows[host.id]?.selected).map((host) => { const row = rows[host.id]; return { host_id:host.id, username:row.username, permission_template_id:row.permissionTemplateId || null, groups_override:row.groupsOverride ? row.groupsOverride.split(",").map((value) => value.trim()).filter(Boolean) : null, sudo_rule_override:row.sudoRuleOverride || null }; });
   const preview = async () => { if (!provisionRows.length) { onError("请至少勾选一台已配置数据根目录的机器"); return; } try { const job = await api<Job>(`/users/${user.id}/access-grants/preview`, { method:"POST", body:JSON.stringify({ grants:provisionRows }) }); setPreparedJob(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "开通预检失败")); } };
@@ -83,6 +93,16 @@ function MemberWorkbench({ user, hosts, templates, onError, onJob }:{ user:User;
 
 function GrantList({ userId, grants, onError, onJob }:{ userId:string; grants:AccessGrant[]; onError:(value:string)=>void; onJob:(job:Job)=>void }) {
   const [selected, setSelected] = useState<Record<string, boolean>>({}); const [deleteData, setDeleteData] = useState<Record<string, boolean>>({}); const [prepared, setPrepared] = useState<Job|null>(null); const [confirmed, setConfirmed] = useState(false);
+  useEffect(() => {
+    if (prepared?.state !== "preview_running") return;
+    let disposed = false;
+    const refresh = () => void api<Job>(`/jobs/${prepared.id}`).then((job) => {
+      if (!disposed) { setPrepared(job); onJob(job); }
+    }).catch((cause) => !disposed && onError(message(cause, "无法读取回收预检状态")));
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [prepared?.id, prepared?.state, onError, onJob]);
   const preview = async () => { const rows = grants.filter((grant) => selected[grant.id]).map((grant) => ({ grant_id:grant.id, delete_data:Boolean(deleteData[grant.id]) })); if (!rows.length) { onError("请先勾选要回收的机器权限"); return; } try { const job = await api<Job>(`/users/${userId}/access-grants/revoke/preview`, { method:"POST", body:JSON.stringify({ grants:rows }) }); setPrepared(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "回收预检失败")); } };
   const execute = async () => { if (!prepared) return; try { const job = await api<Job>(`/access-grant-jobs/${prepared.id}/execute`, { method:"POST" }); setPrepared(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "执行回收失败")); } };
   return <section className="existing-grants"><div className="workbench-heading"><div><span className="section-kicker">已开通</span><h3>机器权限</h3></div>{grants.length > 0 && <Button className="text-button" onClick={() => void preview()}>预检回收</Button>}</div>{grants.length ? <div className="grant-chips">{grants.map((grant) => <div key={grant.id} className={selected[grant.id] ? "revoke-selected" : ""}><label><input aria-label={`回收 ${grant.host_name}`} type="checkbox" checked={Boolean(selected[grant.id])} onChange={(event) => setSelected({ ...selected, [grant.id]:event.target.checked })}/><b>{grant.host_name}</b></label><span>{grant.username}</span><code>{grant.data_directory}</code><label className="delete-data"><input aria-label={`删除 ${grant.host_name} 数据目录`} type="checkbox" checked={Boolean(deleteData[grant.id])} onChange={(event) => setDeleteData({ ...deleteData, [grant.id]:event.target.checked })}/>删除数据目录</label><State state={grant.state}/></div>)}</div> : <p className="empty-inline">还没有机器权限。</p>}{prepared && <section className="prepared revoke-prepared"><div><State state={prepared.state}/><strong>回收批次已生成</strong><span>数据目录只会删除已明确勾选的行。</span></div>{prepared.state === "ready_to_confirm" && <div className="confirm-line"><label><input aria-label="我已核对回收变更" type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>我已核对回收变更</label><Button disabled={!confirmed} onClick={() => void execute()}>确认并回收</Button></div>}</section>}</section>;

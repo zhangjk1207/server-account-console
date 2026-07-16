@@ -6,12 +6,14 @@ import { api } from "./api";
 
 vi.mock("./api", () => ({ api: vi.fn(), login: vi.fn() }));
 const mockedApi = vi.mocked(api);
+let previewState = "ready_to_confirm";
 
 describe("member provisioning workbench", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
     vi.clearAllMocks();
+    previewState = "ready_to_confirm";
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     mockedApi.mockImplementation((path: string, init?: RequestInit) => {
       if (path === "/hosts") return Promise.resolve([{ id: "host-1", name: "gpu-a100-01", address: "192.0.2.10", port: 22, ssh_user: "ops", tags: ["a100"], data_root: "/mnt/train", status: "reachable" }]);
@@ -21,7 +23,8 @@ describe("member provisioning workbench", () => {
       if (path === "/jobs") return Promise.resolve([]);
       if (path === "/users/user-1/keys") return Promise.resolve([{ id: "key-1", managed_user_id: "user-1", public_key: "ssh-ed25519 AAAA test", fingerprint: "SHA256:key", comment: "alice", enabled: true }]);
       if (path === "/users/user-1/access-grants") return Promise.resolve([]);
-      if (path === "/users/user-1/access-grants/preview") return Promise.resolve({ id: "job-1", state: "ready_to_confirm", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
+      if (path === "/users/user-1/access-grants/preview") return Promise.resolve({ id: "job-1", state: previewState, kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
+      if (path === "/jobs/job-1") return Promise.resolve({ id: "job-1", state: "ready_to_confirm", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
       if (path === "/access-grant-jobs/job-1/execute") return Promise.resolve({ id: "job-1", state: "running", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: {}, targets: [] });
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -52,6 +55,16 @@ describe("member provisioning workbench", () => {
     fireEvent.click(screen.getByLabelText("我已核对本批次变更"));
     fireEvent.click(execute);
     await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/access-grant-jobs/job-1/execute", expect.objectContaining({ method: "POST" })));
+  });
+
+  it("reveals confirmation when the background preview becomes ready", async () => {
+    previewState = "preview_running";
+    render(<App />);
+    await screen.findByRole("heading", { name:"Alice" });
+    fireEvent.click(await screen.findByLabelText("选择 gpu-a100-01"));
+    fireEvent.click(screen.getByRole("button", { name:"预检开通" }));
+    expect(screen.queryByRole("button", { name:"确认并开通" })).toBeNull();
+    expect(await screen.findByRole("button", { name:"确认并开通" }, { timeout:3000 })).toBeTruthy();
   });
 
   it("keeps the per-machine management credential in machine settings", async () => {
