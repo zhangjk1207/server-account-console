@@ -5,12 +5,15 @@ from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.access_grants import execution_router as access_grant_execution_router
+from app.api.access_grants import router as access_grants_router
 from app.api.health import router as health_router
 from app.api.host_credentials import router as host_credentials_router
 from app.api.host_operations import execution_router as host_operation_execution_router
 from app.api.host_operations import router as host_operations_router
 from app.api.hosts import router as hosts_router
 from app.api.jobs import router as jobs_router
+from app.api.permission_templates import router as permission_templates_router
 from app.api.scripts import router as scripts_router
 from app.api.users import router as users_router
 from app.core.config import get_settings
@@ -62,3 +65,6 @@ app.include_router(host_operation_execution_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(scripts_router, prefix="/api")
+app.include_router(permission_templates_router, prefix="/api")
+app.include_router(access_grants_router, prefix="/api")
+app.include_router(access_grant_execution_router, prefix="/api")

@@ -1,0 +1,7 @@
+- name: Run controlled access provision
+  ansible.builtin.include_tasks: provision.yml
+  when: access_grant_operation == "provision"
+
+- name: Run controlled access revoke
+  ansible.builtin.include_tasks: revoke.yml
+  when: access_grant_operation == "revoke"

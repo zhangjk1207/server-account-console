@@ -4,7 +4,7 @@ import httpx
 from app.services.host_connections import CredentialProbeResult
 
 from app.api import hosts as hosts_api
-from app.db.models import Job, JobTarget
+from app.db.models import HostAccessGrant, Job, JobTarget, ManagedUser
 from app.db.session import SessionLocal
 from app.main import app
 from app.services.hosts import HostProbeResult
@@ -40,6 +40,74 @@ def test_logged_in_admin_can_create_unconfirmed_host_with_csrf() -> None:
             assert response.status_code == 201
             assert response.json()["status"] == "unconfirmed"
             assert response.json()["tags"] == ["gpu", "lab"]
+            assert response.json()["data_root"] is None
+
+    asyncio.run(scenario())
+
+
+def test_admin_can_configure_an_absolute_data_root() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            host = await client.post("/api/hosts", json=HOST_PAYLOAD, headers={"X-CSRF-Token": token})
+            response = await client.patch(
+                f"/api/hosts/{host.json()['id']}",
+                json={"data_root": "/mnt/training"},
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 200
+            assert response.json()["data_root"] == "/mnt/training"
+
+    asyncio.run(scenario())
+
+
+def test_host_rejects_a_relative_data_root() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            response = await client.post(
+                "/api/hosts",
+                json={**HOST_PAYLOAD, "data_root": "mnt/training"},
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 422
+
+    asyncio.run(scenario())
+
+
+def test_host_rejects_data_root_that_overlaps_home_or_contains_traversal() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            for root in ("/mnt/train/../other", "/home", "/home/training"):
+                response = await client.post("/api/hosts", json={**HOST_PAYLOAD, "data_root": root}, headers={"X-CSRF-Token": token})
+                assert response.status_code == 422
+
+    asyncio.run(scenario())
+
+
+def test_data_root_cannot_change_while_machine_has_an_active_grant() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"password": "correct-horse"})
+            token = (await client.get("/api/auth/csrf")).json()["token"]
+            host = await client.post("/api/hosts", json={**HOST_PAYLOAD, "data_root": "/mnt/train"}, headers={"X-CSRF-Token": token})
+            with SessionLocal() as session:
+                user = ManagedUser(username="alice")
+                session.add(user)
+                session.flush()
+                session.add(HostAccessGrant(host_id=host.json()["id"], managed_user_id=user.id, username="alice", data_directory="/mnt/train/alice"))
+                session.commit()
+            response = await client.patch(f"/api/hosts/{host.json()['id']}", json={"data_root": "/mnt/new"}, headers={"X-CSRF-Token": token})
+            assert response.status_code == 409
+            assert "活跃授权" in response.json()["detail"]
 
     asyncio.run(scenario())
 

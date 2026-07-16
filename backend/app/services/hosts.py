@@ -30,6 +30,7 @@ def create_host(session: Session, payload: HostCreate) -> Host:
         port=payload.port,
         ssh_user=payload.ssh_user,
         tags=normalize_tags(payload.tags),
+        data_root=payload.data_root,
     )
     session.add(host)
     session.commit()

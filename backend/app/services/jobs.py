@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Host, HostCredential, HostUserState, Job, JobEvent, JobTarget, ManagedUser, ScriptTemplate, SshPublicKey
+from app.db.models import Host, HostAccessGrant, HostCredential, HostUserState, Job, JobEvent, JobTarget, ManagedUser, ScriptTemplate, SshPublicKey
 from app.db.session import SessionLocal
 from app.services.hosts import _scan_ed25519_key
 from app.services.host_connections import decrypt_host_credential
@@ -146,6 +146,32 @@ def require_current_job_host_credentials(session: Session, job: Job) -> None:
             raise JobStateError("连接凭证尚未通过 SSH 和 sudo 验证")
 
 
+def require_current_access_grant_state(session: Session, job: Job) -> None:
+    if job.kind not in {"access_grant_provision", "access_grant_revoke"}:
+        return
+    user_id = str(job.request_snapshot.get("user_id", ""))
+    user = session.get(ManagedUser, user_id)
+    if user is None or (job.kind == "access_grant_provision" and not user.enabled):
+        raise JobStateError("成员已不存在或已停用，需要重新预检")
+    if job.kind == "access_grant_provision":
+        current_keys = list(session.scalars(select(SshPublicKey.public_key).where(SshPublicKey.managed_user_id == user.id, SshPublicKey.enabled.is_(True))))
+        if sorted(current_keys) != sorted(job.user_snapshot.get("public_keys", [])):
+            raise JobStateError("成员 SSH 公钥已变化，需要重新预检")
+    for row in job.request_snapshot.get("grants", []):
+        if not isinstance(row, dict):
+            raise JobStateError("授权任务快照无效")
+        host = session.get(Host, str(row.get("host_id", "")))
+        data_root = row.get("data_root")
+        username = row.get("username")
+        data_directory = row.get("data_directory")
+        if host is None or not isinstance(data_root, str) or not isinstance(username, str) or not isinstance(data_directory, str):
+            raise JobStateError("授权任务快照无效")
+        if host.data_root != data_root:
+            raise JobStateError(f"机器 {host.name} 的数据根目录已变化，需要重新预检")
+        if data_directory != f"{data_root.rstrip('/')}/{username}":
+            raise JobStateError("授权任务数据目录无效")
+
+
 def execute_job(session: Session, job: Job, check: bool) -> Job:
     """Synchronous entry point retained for service tests and CLI callers."""
     if not RUNNER_LOCK.acquire(blocking=False):
@@ -155,6 +181,7 @@ def execute_job(session: Session, job: Job, check: bool) -> Job:
             expire_ready_previews(session)
             ensure_executable(job.state)
             require_current_job_host_credentials(session, job)
+            require_current_access_grant_state(session, job)
         _set_started(session, job, check)
         return _run_job(session, job, check)
     except JobStateError as error:
@@ -172,6 +199,7 @@ def start_job(session: Session, job: Job, check: bool) -> Job:
             expire_ready_previews(session)
             ensure_executable(job.state)
             require_current_job_host_credentials(session, job)
+            require_current_access_grant_state(session, job)
         _set_started(session, job, check)
     except Exception:
         RUNNER_LOCK.release()
@@ -199,6 +227,7 @@ def create_and_start_job(
             expire_ready_previews(session)
             ensure_executable(job.state)
             require_current_job_host_credentials(session, job)
+            require_current_access_grant_state(session, job)
         _set_started(session, job, check)
     except Exception:
         RUNNER_LOCK.release()
@@ -314,6 +343,51 @@ def finalize_host_user_states(session: Session, job: Job, *, desired_hash: str) 
     session.commit()
 
 
+def finalize_access_grants(session: Session, job: Job) -> None:
+    """Persist only successful target rows after a fixed grant role completes."""
+    user_id = str(job.request_snapshot["user_id"])
+    succeeded_hosts = {
+        target.host_id
+        for target in session.scalars(select(JobTarget).where(JobTarget.job_id == job.id, JobTarget.state == "succeeded"))
+    }
+    operation = str(job.request_snapshot.get("operation"))
+    for row in job.request_snapshot.get("grants", []):
+        if not isinstance(row, dict) or str(row.get("host_id")) not in succeeded_hosts:
+            continue
+        host_id = str(row["host_id"])
+        if operation == "provision":
+            grant = session.scalar(
+                select(HostAccessGrant).where(HostAccessGrant.host_id == host_id, HostAccessGrant.managed_user_id == user_id)
+            )
+            if grant is None:
+                grant = HostAccessGrant(host_id=host_id, managed_user_id=user_id, username=str(row["username"]), data_directory=str(row["data_directory"]))
+                session.add(grant)
+            grant.username = str(row["username"])
+            grant.permission_template_id = row.get("permission_template_id")
+            grant.template_snapshot = dict(row.get("template") or {})
+            grant.groups_override = row.get("groups_override")
+            grant.sudo_rule_override = row.get("sudo_rule_override")
+            grant.data_directory = str(row["data_directory"])
+            grant.state = "active"
+            grant.last_success_job_id = job.id
+        elif operation == "revoke":
+            grant_id = row.get("grant_id")
+            if not grant_id:
+                continue
+            grant = session.scalar(
+                select(HostAccessGrant).where(
+                    HostAccessGrant.id == str(grant_id),
+                    HostAccessGrant.host_id == host_id,
+                    HostAccessGrant.managed_user_id == user_id,
+                    HostAccessGrant.state == "active",
+                )
+            )
+            if grant is not None:
+                grant.state = "revoked"
+                grant.last_success_job_id = job.id
+    session.commit()
+
+
 def _run_job(session: Session, job: Job, check: bool) -> Job:
     source = Path(__file__).resolve().parents[2] / "ansible"
     # ansible-runner serializes inventory, extra variables and its inherited
@@ -380,16 +454,35 @@ def _run_job(session: Session, job: Job, check: bool) -> Job:
         def event_handler(event: dict) -> None:
             apply_runner_events(session, job, [event])
 
+        is_access_grant_job = job.kind in {"access_grant_provision", "access_grant_revoke"}
+        if is_access_grant_job:
+            hosts_by_id = {str(host["id"]): str(host["name"]) for host in job.request_snapshot["hosts"]}
+            grants_by_host = {
+                hosts_by_id[str(row["host_id"])]: row
+                for row in job.request_snapshot.get("grants", [])
+                if isinstance(row, dict) and str(row.get("host_id")) in hosts_by_id
+            }
+            extravars = {
+                "access_grants_by_host": grants_by_host,
+                "access_grant_operation": job.request_snapshot.get("operation"),
+                "access_grant_user": job.user_snapshot,
+            }
+            playbook = "access_grant.yml"
+        else:
+            extravars = {
+                "desired_user": job.user_snapshot,
+                "post_script_content": "" if job.script_snapshot is None else job.script_snapshot["body"],
+                "task_input_json": json.dumps(task_input, ensure_ascii=False),
+            }
+            playbook = "playbook.yml"
+
         result = run_playbook(
             RunnerRequest(
                 artifact,
                 inventory,
-                {
-                    "desired_user": job.user_snapshot,
-                    "post_script_content": "" if job.script_snapshot is None else job.script_snapshot["body"],
-                    "task_input_json": json.dumps(task_input, ensure_ascii=False),
-                },
+                extravars,
                 check,
+                playbook=playbook,
                 sensitive_values=tuple(sensitive_values),
             ),
             event_handler,
@@ -405,6 +498,9 @@ def _run_job(session: Session, job: Job, check: bool) -> Job:
         job.state = "partial_failed" if failed or result.rc != 0 else "succeeded"
     session.commit()
     if not check:
-        finalize_host_user_states(session, job, desired_hash=desired_hash(job))
+        if job.kind in {"access_grant_provision", "access_grant_revoke"}:
+            finalize_access_grants(session, job)
+        else:
+            finalize_host_user_states(session, job, desired_hash=desired_hash(job))
     session.refresh(job)
     return job

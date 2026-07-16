@@ -10,7 +10,7 @@ export default defineConfig({
       : undefined,
   },
   webServer: {
-    command: "npm run dev -- --port 4175",
+    command: "npm run preview -- --port 4175",
     port: 4175,
     reuseExistingServer: true,
   },

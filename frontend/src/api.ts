@@ -1,4 +1,4 @@
-export type Host = { id:string; name:string; address:string; port:number; ssh_user:string; tags:string[]; status:string; last_probe_error?:string|null; last_probe_latency_ms?:number|null };
+export type Host = { id:string; name:string; address:string; port:number; ssh_user:string; tags:string[]; data_root:string|null; status:string; last_probe_error?:string|null; last_probe_latency_ms?:number|null };
 export type HostCredentialStatus = { private_key_configured:boolean; sudo_password_configured:boolean; verified_at:string|null; ssh_verified:boolean|null; sudo_verified:boolean|null; last_error:string|null };
 export type HostCredentialProbe = { fingerprint:string|null; requires_confirmation:boolean; ssh_ok:boolean|null; sudo_ok:boolean|null; error:string|null; latency_ms:number|null };
 export type HostAuthorizedKey = { public_key:string; fingerprint:string; comment:string };
@@ -7,6 +7,8 @@ export type SshPasswordAuthentication = { enabled:boolean };
 export type User = { id:string; username:string; display_name:string; shell:string; home:string; enabled:boolean };
 export type Script = { id:string; name:string; description:string; version:number; enabled:boolean; body:string };
 export type SshKey = { id:string; managed_user_id:string; public_key:string; fingerprint:string; comment:string; enabled:boolean };
+export type PermissionTemplate = { id:string; name:string; description:string; groups:string[]; sudo_rule:string|null; enabled:boolean };
+export type AccessGrant = { id:string; host_id:string; host_name:string; username:string; permission_template_id:string|null; template_name:string|null; groups:string[]; sudo_rule:string|null; data_directory:string; state:string; last_success_job_id:string|null; updated_at:string };
 export type HostUserState = { host_id:string; host_name:string; status:string; synced_at:string|null; desired_hash:string|null };
 export type JobTarget = { host_id:string; host_name:string; state:string; output:string; error:string|null; started_at:string|null; finished_at:string|null };
 export type JobEvent = { id:string; job_id:string; host_id:string|null; level:string; message:string; created_at:string };

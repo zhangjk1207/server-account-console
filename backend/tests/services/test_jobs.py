@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.db.models import Host, HostCredential, Job, JobTarget, ManagedUser, SshPublicKey
+from app.db.models import Host, HostAccessGrant, HostCredential, Job, JobTarget, ManagedUser, SshPublicKey
 from app.db.session import SessionLocal
 from app.services import jobs
 from app.services.credentials import CredentialCipher
@@ -110,6 +110,44 @@ def test_successful_targets_update_user_host_state() -> None:
         assert state.desired_hash == "desired-state-hash"
 
 
+def test_successful_access_grant_targets_update_only_matching_grants() -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-01", address="192.0.2.10", data_root="/mnt/train")
+        user = ManagedUser(username="alice")
+        job = Job(
+            kind="access_grant_provision",
+            state="succeeded",
+            user_snapshot={"id": "placeholder", "public_keys": ["ssh-ed25519 AAAA alice"]},
+            request_snapshot={"user_id": "placeholder", "operation": "provision", "grants": []},
+        )
+        session.add_all([host, user, job])
+        session.flush()
+        job.user_snapshot = {"id": user.id, "public_keys": ["ssh-ed25519 AAAA alice"]}
+        job.request_snapshot = {
+            "user_id": user.id,
+            "operation": "provision",
+            "grants": [{
+                "host_id": host.id,
+                "username": "alice-gpu",
+                "permission_template_id": None,
+                "template": {"name": "自定义", "groups": ["docker"], "sudo_rule": None},
+                "groups_override": ["docker"],
+                "sudo_rule_override": None,
+                "data_directory": "/mnt/train/alice-gpu",
+            }],
+        }
+        session.add(JobTarget(job_id=job.id, host_id=host.id, state="succeeded"))
+        session.commit()
+
+        jobs.finalize_access_grants(session, job)
+
+        grant = session.scalar(select(HostAccessGrant).where(HostAccessGrant.host_id == host.id))
+        assert grant is not None
+        assert grant.username == "alice-gpu"
+        assert grant.data_directory == "/mnt/train/alice-gpu"
+        assert grant.last_success_job_id == job.id
+
+
 def test_lock_conflict_does_not_create_an_orphan_preview() -> None:
     assert jobs.RUNNER_LOCK.acquire(blocking=False)
     try:
@@ -153,6 +191,37 @@ def test_sync_execution_rechecks_current_host_credential(monkeypatch) -> None:
         monkeypatch.setattr(jobs, "_launch_worker", lambda *_args: (_ for _ in ()).throw(AssertionError("凭证失效时不得执行")))
 
         with pytest.raises(JobStateError, match="连接凭证尚未通过 SSH 和 sudo 验证"):
+            jobs.start_job(session, job, check=False)
+
+        assert session.get(Job, job.id).state == "ready_to_confirm"
+
+
+def test_access_grant_execution_rejects_a_changed_data_root(monkeypatch) -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-root-check", address="192.0.2.24", data_root="/mnt/new", status="reachable", host_key_fingerprint="SHA256:known")
+        user = ManagedUser(username="alice")
+        job = Job(
+            kind="access_grant_provision",
+            state="ready_to_confirm",
+            user_snapshot={"id": "placeholder", "public_keys": ["ssh-ed25519 AAAA alice"]},
+            request_snapshot={"user_id": "placeholder", "hosts": [], "grants": []},
+        )
+        session.add_all([host, user, job])
+        session.flush()
+        job.user_snapshot = {"id": user.id, "public_keys": ["ssh-ed25519 AAAA alice"]}
+        job.request_snapshot = {
+            "user_id": user.id,
+            "hosts": [{"id": host.id, "name": host.name}],
+            "grants": [{"host_id": host.id, "username": "alice", "data_root": "/mnt/old", "data_directory": "/mnt/old/alice"}],
+        }
+        session.add_all([
+            SshPublicKey(managed_user_id=user.id, public_key="ssh-ed25519 AAAA alice", fingerprint="SHA256:alice", comment="alice"),
+            HostCredential(host_id=host.id, private_key_ciphertext="cipher", sudo_password_ciphertext="cipher", ssh_verified=True, sudo_verified=True),
+        ])
+        session.commit()
+        monkeypatch.setattr(jobs, "_launch_worker", lambda *_args: (_ for _ in ()).throw(AssertionError("根目录变化时不得执行")))
+
+        with pytest.raises(JobStateError, match="数据根目录已变化"):
             jobs.start_job(session, job, check=False)
 
         assert session.get(Job, job.id).state == "ready_to_confirm"

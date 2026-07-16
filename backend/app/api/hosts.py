@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import require_admin, require_csrf
-from app.db.models import Host, HostCredential, Job, JobTarget
+from app.db.models import Host, HostAccessGrant, HostCredential, Job, JobTarget
 from app.db.session import get_db_session
 from app.schemas.host import FingerprintConfirmation, HostCreate, HostProbeRead, HostRead, HostUpdate
 from app.services.hosts import _scan_ed25519_key, apply_probe_result, create_host, get_active_host, probe_host, update_host
@@ -36,7 +36,12 @@ def add_host(payload: HostCreate, session: Session = Depends(get_db_session)) ->
 
 @router.patch("/{host_id}", response_model=HostRead, dependencies=[Depends(require_csrf)])
 def edit_host(host_id: str, payload: HostUpdate, session: Session = Depends(get_db_session)) -> Host:
-    return update_host(session, require_host(session, host_id), payload)
+    host = require_host(session, host_id)
+    if "data_root" in payload.model_fields_set and payload.data_root != host.data_root:
+        active_grant = session.scalar(select(HostAccessGrant.id).where(HostAccessGrant.host_id == host.id, HostAccessGrant.state == "active"))
+        if active_grant is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="机器存在活跃授权，不能修改数据根目录")
+    return update_host(session, host, payload)
 
 
 @router.delete("/{host_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])

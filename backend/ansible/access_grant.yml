@@ -1,0 +1,8 @@
+- name: Apply fixed member access grant
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    access_grant: "{{ access_grants_by_host[inventory_hostname] }}"
+  roles:
+    - access_grant

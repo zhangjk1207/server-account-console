@@ -1,0 +1,49 @@
+- name: Assert controlled revoke paths
+  ansible.builtin.assert:
+    that:
+      - access_grant.data_root is match('^/.+')
+      - access_grant.data_directory == access_grant.data_root ~ '/' ~ access_grant.username
+      - access_grant.username is match('^[a-z_][a-z0-9_-]{0,31}$')
+    fail_msg: "授权记录的路径或用户名不符合受控回收规则"
+
+- name: Inspect managed logical home
+  ansible.builtin.stat:
+    path: "/home/{{ access_grant.username }}"
+    follow: false
+  register: access_grant_home
+
+- name: Read account record before removal
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ access_grant.username }}"
+    fail_key: false
+
+- name: Assert home link and account are managed before removal
+  ansible.builtin.assert:
+    that:
+      - access_grant_home.stat.exists
+      - access_grant_home.stat.islnk | default(false) and access_grant_home.stat.lnk_source | default('') == access_grant.data_directory
+      - access_grant.username not in ansible_facts.getent_passwd or ansible_facts.getent_passwd[access_grant.username][5] == '/home/' ~ access_grant.username
+    fail_msg: "现有账号或 /home 路径不属于本系统记录，拒绝删除"
+
+- name: Remove controlled logical home link
+  ansible.builtin.file:
+    path: "/home/{{ access_grant.username }}"
+    state: absent
+
+- name: Remove Linux account without deleting files
+  ansible.builtin.user:
+    name: "{{ access_grant.username }}"
+    state: absent
+    remove: false
+
+- name: Remove controlled sudo policy
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/server-account-{{ access_grant.username }}"
+    state: absent
+
+- name: Remove controlled user data directory
+  ansible.builtin.file:
+    path: "{{ access_grant.data_directory }}"
+    state: absent
+  when: access_grant.delete_data | bool

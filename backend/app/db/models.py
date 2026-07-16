@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -29,6 +29,7 @@ class Host(TimestampedRecord, Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     ssh_user: Mapped[str] = mapped_column(String(64), default="root")
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    data_root: Mapped[str | None] = mapped_column(String(255), nullable=True)
     host_key_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="unconfirmed")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -73,6 +74,37 @@ class SshPublicKey(TimestampedRecord, Base):
     fingerprint: Mapped[str] = mapped_column(String(128), unique=True)
     comment: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PermissionTemplate(TimestampedRecord, Base):
+    __tablename__ = "permission_templates"
+
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    groups: Mapped[list[str]] = mapped_column(JSON, default=list)
+    sudo_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class HostAccessGrant(TimestampedRecord, Base):
+    __tablename__ = "host_access_grants"
+    __table_args__ = (
+        UniqueConstraint("host_id", "managed_user_id", name="uq_host_access_grant"),
+        Index("uq_active_host_access_username", "host_id", "username", unique=True, sqlite_where=text("state = 'active'")),
+    )
+
+    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id", ondelete="CASCADE"), index=True)
+    managed_user_id: Mapped[str] = mapped_column(ForeignKey("managed_users.id", ondelete="CASCADE"), index=True)
+    username: Mapped[str] = mapped_column(String(32))
+    permission_template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("permission_templates.id", ondelete="SET NULL"), nullable=True
+    )
+    template_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    groups_override: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    sudo_rule_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_directory: Mapped[str] = mapped_column(String(255))
+    state: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    last_success_job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
 
 
 class ScriptTemplate(TimestampedRecord, Base):
