@@ -71,3 +71,34 @@ def test_permission_template_keeps_its_access_defaults() -> None:
         session.flush()
         assert template.enabled is True
         assert template.groups == ["docker"]
+
+
+def test_adopted_access_grant_keeps_observed_account_identity_without_data_directory() -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-existing", address="192.0.2.12")
+        user = ManagedUser(username="alice")
+        session.add_all([host, user])
+        session.flush()
+        grant = HostAccessGrant(
+            host_id=host.id,
+            managed_user_id=user.id,
+            username="legacy-alice",
+            account_origin="adopted",
+            remote_uid=1007,
+            remote_primary_group="research",
+            remote_home="/srv/homes/legacy-alice",
+            managed_public_keys=["ssh-ed25519 AAAA alice@laptop"],
+            managed_key_fingerprints=["SHA256:alice"],
+            data_directory=None,
+        )
+        session.add(grant)
+        session.commit()
+        session.refresh(grant)
+
+        assert grant.account_origin == "adopted"
+        assert grant.remote_uid == 1007
+        assert grant.remote_primary_group == "research"
+        assert grant.remote_home == "/srv/homes/legacy-alice"
+        assert grant.managed_public_keys == ["ssh-ed25519 AAAA alice@laptop"]
+        assert grant.managed_key_fingerprints == ["SHA256:alice"]
+        assert grant.data_directory is None

@@ -3,14 +3,15 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Host, HostAccessGrant, HostCredential, Job, JobTarget, ManagedUser, PermissionTemplate, SshPublicKey
 from app.schemas.access_grant import AccessGrantProvisionRow, AccessGrantRevokeRow
+from app.services.command_previews import build_grant_command_preview
 from app.services.jobs import JobStateError
 from app.services.users import normalize_groups
 
 
-def _active_keys(session: Session, user: ManagedUser) -> list[str]:
+def _active_keys(session: Session, user: ManagedUser) -> list[SshPublicKey]:
     if not user.enabled:
         raise JobStateError("已停用的成员不能开通权限")
-    keys = list(session.scalars(select(SshPublicKey.public_key).where(SshPublicKey.managed_user_id == user.id, SshPublicKey.enabled.is_(True))))
+    keys = list(session.scalars(select(SshPublicKey).where(SshPublicKey.managed_user_id == user.id, SshPublicKey.enabled.is_(True))))
     if not keys:
         raise JobStateError("成员没有启用的 SSH 公钥")
     return keys
@@ -58,8 +59,14 @@ def _template_values(session: Session, row: AccessGrantProvisionRow) -> tuple[Pe
     return template, groups, sudo_rule, snapshot
 
 
-def _user_snapshot(user: ManagedUser, public_keys: list[str]) -> dict:
-    return {"id": user.id, "username": user.username, "display_name": user.display_name, "public_keys": public_keys}
+def _user_snapshot(user: ManagedUser, keys: list[SshPublicKey]) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "public_keys": [key.public_key for key in keys],
+        "key_fingerprints": [key.fingerprint for key in keys],
+    }
 
 
 def create_access_grant_job(
@@ -72,7 +79,9 @@ def create_access_grant_job(
 ) -> Job:
     if operation not in {"provision", "revoke"}:
         raise JobStateError("不支持的授权操作")
-    public_keys = _active_keys(session, user) if operation == "provision" else []
+    active_keys = _active_keys(session, user) if operation == "provision" else []
+    public_keys = [key.public_key for key in active_keys]
+    key_fingerprints = [key.fingerprint for key in active_keys]
 
     snapshots: list[dict] = []
     hosts: list[Host] = []
@@ -83,7 +92,7 @@ def create_access_grant_job(
             if row.host_id in seen_host_ids:
                 raise JobStateError("同一批次不能重复选择机器")
             seen_host_ids.add(row.host_id)
-            host = _require_host_ready(session, row.host_id, require_data_root=True)
+            host = _require_host_ready(session, row.host_id, require_data_root=row.account_origin == "created")
             owner = session.scalar(
                 select(HostAccessGrant).where(
                     HostAccessGrant.host_id == host.id,
@@ -94,21 +103,59 @@ def create_access_grant_job(
             )
             if owner is not None:
                 raise JobStateError(f"机器 {host.name} 上的用户名 {row.username} 已被另一名成员使用")
-            template, groups, sudo_rule, template_snapshot = _template_values(session, row)
-            data_root = str(host.data_root).rstrip("/")
-            snapshots.append({
-                "host_id": host.id,
-                "username": row.username,
-                "permission_template_id": None if template is None else template.id,
-                "template": template_snapshot,
-                "groups_override": None if row.groups_override is None else normalize_groups(row.groups_override),
-                "sudo_rule_override": row.sudo_rule_override,
-                "groups": groups,
-                "sudo_rule": sudo_rule,
-                "data_root": data_root,
-                "data_directory": f"{data_root}/{row.username}",
-                "delete_data": False,
-            })
+            existing_grant = session.scalar(
+                select(HostAccessGrant).where(
+                    HostAccessGrant.host_id == host.id,
+                    HostAccessGrant.managed_user_id == user.id,
+                )
+            )
+            if row.account_origin == "adopted":
+                assert row.existing_account is not None
+                snapshot = {
+                    "host_id": host.id,
+                    "username": row.username,
+                    "account_origin": "adopted",
+                    "permission_template_id": None,
+                    "template": {"id": None, "name": "保留已有权限", "groups": [], "sudo_rule": None},
+                    "groups_override": None,
+                    "sudo_rule_override": None,
+                    "groups": [],
+                    "sudo_rule": None,
+                    "data_root": None,
+                    "data_directory": None,
+                    "remote_uid": row.existing_account.uid,
+                    "remote_primary_group": row.existing_account.primary_group,
+                    "remote_home": row.existing_account.home,
+                    "managed_public_keys": [] if existing_grant is None else list(existing_grant.managed_public_keys),
+                    "managed_key_fingerprints": [] if existing_grant is None else list(existing_grant.managed_key_fingerprints),
+                    "delete_data": False,
+                }
+            else:
+                template, groups, sudo_rule, template_snapshot = _template_values(session, row)
+                data_root = str(host.data_root).rstrip("/")
+                snapshot = {
+                    "host_id": host.id,
+                    "username": row.username,
+                    "account_origin": "created",
+                    "permission_template_id": None if template is None else template.id,
+                    "template": template_snapshot,
+                    "groups_override": None if row.groups_override is None else normalize_groups(row.groups_override),
+                    "sudo_rule_override": row.sudo_rule_override,
+                    "groups": groups,
+                    "sudo_rule": sudo_rule,
+                    "data_root": data_root,
+                    "data_directory": f"{data_root}/{row.username}",
+                    "remote_uid": None,
+                    "remote_primary_group": row.username,
+                    "remote_home": f"/home/{row.username}",
+                    "managed_public_keys": [] if existing_grant is None else list(existing_grant.managed_public_keys),
+                    "managed_key_fingerprints": [] if existing_grant is None else list(existing_grant.managed_key_fingerprints),
+                    "delete_data": False,
+                }
+            preview = build_grant_command_preview(operation, snapshot, public_keys)
+            preview["key_fingerprints"] = key_fingerprints
+            snapshot["command_preview"] = preview
+            snapshots.append(snapshot)
             hosts.append(host)
     else:
         grant_ids = [row.grant_id for row in rows]
@@ -125,22 +172,34 @@ def create_access_grant_job(
         for row in rows:
             assert isinstance(row, AccessGrantRevokeRow)
             grant = grants[row.grant_id]
-            host = _require_host_ready(session, grant.host_id, require_data_root=True)
-            snapshots.append({
+            host = _require_host_ready(session, grant.host_id, require_data_root=grant.account_origin == "created")
+            if grant.account_origin == "adopted" and row.delete_data:
+                raise JobStateError("纳管的已有账号不支持删除数据目录")
+            snapshot = {
                 "grant_id": grant.id,
                 "host_id": host.id,
                 "username": grant.username,
+                "account_origin": grant.account_origin,
                 "data_root": host.data_root,
                 "data_directory": grant.data_directory,
-                "delete_data": row.delete_data,
-            })
+                "remote_uid": grant.remote_uid,
+                "remote_primary_group": grant.remote_primary_group,
+                "remote_home": grant.remote_home,
+                "managed_public_keys": list(grant.managed_public_keys),
+                "managed_key_fingerprints": list(grant.managed_key_fingerprints),
+                "delete_data": row.delete_data if grant.account_origin == "created" else False,
+            }
+            preview = build_grant_command_preview(operation, snapshot, [])
+            preview["key_fingerprints"] = list(grant.managed_key_fingerprints)
+            snapshot["command_preview"] = preview
+            snapshots.append(snapshot)
             hosts.append(host)
 
     kind = f"access_grant_{operation}"
     job = Job(
         kind=kind,
         state="preview_running" if check else "running",
-        user_snapshot=_user_snapshot(user, public_keys),
+        user_snapshot=_user_snapshot(user, active_keys),
         request_snapshot={"user_id": user.id, "operation": operation, "hosts": [_host_snapshot(host) for host in hosts], "grants": snapshots},
         script_snapshot=None,
     )
