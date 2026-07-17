@@ -8,6 +8,10 @@ vi.mock("./api", () => ({ api: vi.fn(), login: vi.fn() }));
 const mockedApi = vi.mocked(api);
 let previewState = "ready_to_confirm";
 let listedJobs: Array<Record<string, unknown>> = [];
+const commandGrant = {
+  host_id:"host-1", username:"alice", account_origin:"created", data_directory:"/mnt/train/alice",
+  command_preview:{ label:"等价命令，实际由 Ansible 模块执行", tasks:["创建账号"], commands:["useradd -M alice"], warnings:[], key_fingerprints:["SHA256:key"] },
+};
 
 describe("member provisioning workbench", () => {
   afterEach(cleanup);
@@ -25,8 +29,10 @@ describe("member provisioning workbench", () => {
       if (path === "/jobs") return Promise.resolve(listedJobs);
       if (path === "/users/user-1/keys") return Promise.resolve([{ id: "key-1", managed_user_id: "user-1", public_key: "ssh-ed25519 AAAA test", fingerprint: "SHA256:key", comment: "alice", enabled: true }]);
       if (path === "/users/user-1/access-grants") return Promise.resolve([]);
-      if (path === "/users/user-1/access-grants/preview") return Promise.resolve({ id: "job-1", state: previewState, kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
-      if (path === "/jobs/job-1") return Promise.resolve({ id: "job-1", state: "ready_to_confirm", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
+      if (path === "/hosts/host-1/users") return Promise.resolve([{ username:"jinji", uid:1005, primary_group:"jinji", groups:["docker"], shell:"/bin/bash", home:"/home/jinji", locked:false, expires_at:null, public_keys:[] }]);
+      if (path === "/hosts/host-1/users/jinji/keys") return Promise.resolve([{ public_key:"ssh-ed25519 AAAA old", fingerprint:"SHA256:old", comment:"old" }]);
+      if (path === "/users/user-1/access-grants/preview") return Promise.resolve({ id: "job-1", state: previewState, kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [commandGrant] }, targets: [{ host_id:"host-1", host_name:"gpu-a100-01", state:"succeeded", output:"", error:null, started_at:null, finished_at:null }] });
+      if (path === "/jobs/job-1") return Promise.resolve({ id: "job-1", state: "ready_to_confirm", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [commandGrant] }, targets: [{ host_id:"host-1", host_name:"gpu-a100-01", state:"succeeded", output:"", error:null, started_at:null, finished_at:null }] });
       if (path === "/access-grant-jobs/job-1/execute") return Promise.resolve({ id: "job-1", state: "running", kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: {}, targets: [] });
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -43,7 +49,27 @@ describe("member provisioning workbench", () => {
     await waitFor(() => {
       const call = mockedApi.mock.calls.find(([path]) => path === "/users/user-1/access-grants/preview");
       expect(call).toBeTruthy();
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ grants: [{ host_id: "host-1", username: "alice-gpu", permission_template_id: "tpl-1", groups_override: null, sudo_rule_override: null }] });
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ grants: [{ host_id: "host-1", username: "alice-gpu", account_origin:"created", permission_template_id: "tpl-1", groups_override: null, sudo_rule_override: null }] });
+    });
+  });
+
+  it("loads and submits an existing Linux account for in-place adoption", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name:"Alice" });
+    fireEvent.click(await screen.findByRole("button", { name:"纳管已有账号" }));
+    const account = await screen.findByLabelText("gpu-a100-01 已有账号");
+    fireEvent.change(account, { target:{ value:"jinji" } });
+    await screen.findByText(/1 把现有密钥/);
+    fireEvent.click(screen.getByLabelText("选择 gpu-a100-01"));
+    fireEvent.click(screen.getByRole("button", { name:"预检开通" }));
+
+    await waitFor(() => {
+      expect(mockedApi).toHaveBeenCalledWith("/hosts/host-1/users");
+      const call = mockedApi.mock.calls.find(([path]) => path === "/users/user-1/access-grants/preview");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ grants:[{
+        host_id:"host-1", username:"jinji", account_origin:"adopted",
+        existing_account:{ uid:1005, primary_group:"jinji", home:"/home/jinji", public_key_fingerprints:["SHA256:old"] },
+      }] });
     });
   });
 
@@ -53,8 +79,10 @@ describe("member provisioning workbench", () => {
     fireEvent.click(await screen.findByLabelText("选择 gpu-a100-01"));
     fireEvent.click(screen.getByRole("button", { name: "预检开通" }));
     const execute = await screen.findByRole("button", { name: "确认并开通" });
+    expect(screen.getByText("useradd -M alice")).toBeTruthy();
+    expect(screen.getByText("等价命令，实际由 Ansible 模块执行")).toBeTruthy();
     expect((execute as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText("我已核对本批次变更"));
+    fireEvent.click(screen.getByLabelText("我已审阅以上命令"));
     fireEvent.click(execute);
     await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/access-grant-jobs/job-1/execute", expect.objectContaining({ method: "POST" })));
   });
@@ -85,12 +113,13 @@ describe("member provisioning workbench", () => {
   });
 
   it("offers persistent confirmation for a ready access batch in execution records", async () => {
-    listedJobs = [{ id:"job-1", state:"ready_to_confirm", kind:"access_grant_provision", created_at:"2026-07-17T00:00:00Z", request_snapshot:{ grants:[] }, targets:[{ host_id:"host-1", host_name:"gpu-a100-01", state:"succeeded", output:"", error:null, started_at:null, finished_at:null }] }];
+    listedJobs = [{ id:"job-1", state:"ready_to_confirm", kind:"access_grant_provision", created_at:"2026-07-17T00:00:00Z", request_snapshot:{ grants:[commandGrant] }, targets:[{ host_id:"host-1", host_name:"gpu-a100-01", state:"succeeded", output:"", error:null, started_at:null, finished_at:null }] }];
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name:"执行记录" }));
     const execute = await screen.findByRole("button", { name:"确认并开通" });
+    expect(screen.getByText("useradd -M alice")).toBeTruthy();
     expect((execute as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText("确认批次 job-1"));
+    fireEvent.click(screen.getByLabelText("我已审阅以上命令"));
     fireEvent.click(execute);
     await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/access-grant-jobs/job-1/execute", expect.objectContaining({ method:"POST" })));
   });

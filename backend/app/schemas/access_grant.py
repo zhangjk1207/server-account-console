@@ -37,6 +37,7 @@ class ExistingAccountSnapshot(BaseModel):
     uid: int = Field(ge=1000, le=2_147_483_647)
     primary_group: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     home: str = Field(min_length=1, max_length=255, pattern=r"^/")
+    public_key_fingerprints: list[str] = Field(default_factory=list, max_length=100)
 
 
 class AccessGrantProvisionRow(BaseModel):

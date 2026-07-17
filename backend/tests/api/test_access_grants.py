@@ -199,7 +199,7 @@ def test_adopted_account_preview_does_not_require_data_root_and_freezes_commands
                         "host_id": host_id,
                         "username": "legacy-alice",
                         "account_origin": "adopted",
-                        "existing_account": {"uid": 1007, "primary_group": "research", "home": "/srv/homes/legacy-alice"},
+                        "existing_account": {"uid": 1007, "primary_group": "research", "home": "/srv/homes/legacy-alice", "public_key_fingerprints": ["SHA256:old"]},
                     }]
                 },
                 headers={"X-CSRF-Token": token},
@@ -211,9 +211,11 @@ def test_adopted_account_preview_does_not_require_data_root_and_freezes_commands
             assert row["remote_uid"] == 1007
             assert row["remote_primary_group"] == "research"
             assert row["remote_home"] == "/srv/homes/legacy-alice"
+            assert row["existing_key_fingerprints"] == ["SHA256:old"]
             assert row["data_directory"] is None
             assert any("usermod -U legacy-alice" in command for command in row["command_preview"]["commands"])
             assert row["command_preview"]["key_fingerprints"] == ["SHA256:alice"]
+            assert row["command_preview"]["existing_key_fingerprints"] == ["SHA256:old"]
 
     asyncio.run(scenario())
 

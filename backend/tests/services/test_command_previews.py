@@ -64,3 +64,34 @@ def test_created_provision_preview_shows_controlled_data_path_and_home_link() ->
     assert "/mnt/train/alice" in commands
     assert "ln -s /mnt/train/alice /home/alice" in commands
     assert "ssh-ed25519 AAAA platform-key" in commands
+
+
+def test_created_preview_includes_sudo_policy_and_valid_data_removal_commands() -> None:
+    provision = build_grant_command_preview(
+        "provision",
+        {
+            "account_origin": "created",
+            "username": "alice",
+            "data_directory": "/mnt/train/alice",
+            "groups": [],
+            "sudo_rule": "ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi",
+        },
+        ["ssh-ed25519 AAAA platform-key"],
+    )
+    revoke = build_grant_command_preview(
+        "revoke",
+        {
+            "account_origin": "created",
+            "username": "alice",
+            "data_directory": "/mnt/train/alice",
+            "delete_data": True,
+        },
+        [],
+    )
+
+    provision_commands = "\n".join(provision["commands"])
+    revoke_commands = "\n".join(revoke["commands"])
+    assert "/etc/sudoers.d/server-account-alice" in provision_commands
+    assert "visudo -cf /etc/sudoers.d/server-account-alice" in provision_commands
+    assert "rm -rf -- /mnt/train/alice" in revoke_commands
+    assert "--one-file-system" not in revoke_commands

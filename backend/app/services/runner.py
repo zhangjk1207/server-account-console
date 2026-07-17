@@ -66,7 +66,7 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
     executable = next(
         (
             directory / "ansible-playbook"
-            for directory in (runner_script_bin, python_bin)
+            for directory in (python_bin, runner_script_bin)
             if (directory / "ansible-playbook").is_file()
         ),
         None,

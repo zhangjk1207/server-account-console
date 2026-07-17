@@ -8,13 +8,15 @@ export type User = { id:string; username:string; display_name:string; shell:stri
 export type Script = { id:string; name:string; description:string; version:number; enabled:boolean; body:string };
 export type SshKey = { id:string; managed_user_id:string; public_key:string; fingerprint:string; comment:string; enabled:boolean };
 export type PermissionTemplate = { id:string; name:string; description:string; groups:string[]; sudo_rule:string|null; enabled:boolean };
-export type AccessGrant = { id:string; host_id:string; host_name:string; username:string; permission_template_id:string|null; template_name:string|null; groups:string[]; sudo_rule:string|null; data_directory:string; state:string; last_success_job_id:string|null; updated_at:string };
+export type CommandPreview = { label:string; tasks:string[]; commands:string[]; warnings:string[]; key_fingerprints:string[]; existing_key_fingerprints?:string[] };
+export type AccessGrantSnapshot = { host_id:string; username:string; account_origin:"created"|"adopted"; data_directory:string|null; remote_uid?:number|null; remote_primary_group?:string|null; remote_home?:string|null; command_preview?:CommandPreview };
+export type AccessGrant = { id:string; host_id:string; host_name:string; username:string; permission_template_id:string|null; template_name:string|null; groups:string[]; sudo_rule:string|null; account_origin:"created"|"adopted"; remote_uid:number|null; remote_primary_group:string|null; remote_home:string|null; managed_key_fingerprints:string[]; data_directory:string|null; state:string; last_success_job_id:string|null; updated_at:string };
 export type HostUserState = { host_id:string; host_name:string; status:string; synced_at:string|null; desired_hash:string|null };
 export type JobTarget = { host_id:string; host_name:string; state:string; output:string; error:string|null; started_at:string|null; finished_at:string|null };
 export type JobEvent = { id:string; job_id:string; host_id:string|null; level:string; message:string; created_at:string };
 export type Job = {
   id:string; state:string; kind:string; created_at:string; started_at?:string|null; finished_at?:string|null;
-  user_snapshot?:Record<string, unknown>; request_snapshot:Record<string, unknown> & { host_ids?:string[]; hosts?:{id:string;name:string;address:string}[] };
+  user_snapshot?:Record<string, unknown>; request_snapshot:Record<string, unknown> & { host_ids?:string[]; hosts?:{id:string;name:string;address:string}[]; grants?:AccessGrantSnapshot[] };
   script_snapshot?:{name:string;version:number}|null; targets?:JobTarget[];
 };
 

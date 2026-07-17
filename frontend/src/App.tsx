@@ -1,11 +1,15 @@
 import { Fragment, useEffect, useState } from "react";
 import { Activity, CheckCircle2, ChevronRight, Database, KeyRound, MonitorCog, Plus, RefreshCw, Settings2, ShieldCheck, Users } from "lucide-react";
 
-import { AccessGrant, api, Host, Job, login, PermissionTemplate, SshKey, User } from "./api";
+import { AccessGrant, api, Host, HostUser, Job, login, PermissionTemplate, SshKey, User } from "./api";
+import { CommandReview } from "./CommandReview";
 import { Button } from "./components/ui/button";
 
 type View = "members" | "machines" | "templates" | "jobs";
-type GrantRow = { selected:boolean; username:string; permissionTemplateId:string; groupsOverride:string; sudoRuleOverride:string; advanced:boolean };
+type GrantRow = { selected:boolean; username:string; accountOrigin:"created"|"adopted"; permissionTemplateId:string; groupsOverride:string; sudoRuleOverride:string; advanced:boolean; inventory:HostUser[]; inventoryLoading:boolean; inventoryLoaded:boolean };
+type ProvisionRow =
+  | { host_id:string; username:string; account_origin:"created"; permission_template_id:string|null; groups_override:string[]|null; sudo_rule_override:string|null }
+  | { host_id:string; username:string; account_origin:"adopted"; existing_account:{ uid:number; primary_group:string; home:string; public_key_fingerprints:string[] } };
 
 const stateLabel: Record<string, string> = {
   reachable: "可连接", unreachable: "不可连接", unconfirmed: "待确认", fingerprint_changed: "指纹变化",
@@ -75,10 +79,24 @@ function MemberCreate({ onCancel, onSubmit }:{ onCancel:()=>void; onSubmit:(payl
 }
 
 function MemberWorkbench({ user, hosts, templates, onError, onJob }:{ user:User; hosts:Host[]; templates:PermissionTemplate[]; onError:(value:string)=>void; onJob:(job:Job)=>void }) {
-  const [keys, setKeys] = useState<SshKey[]>([]); const [grants, setGrants] = useState<AccessGrant[]>([]); const [keyText, setKeyText] = useState("");
-  const [rows, setRows] = useState<Record<string, GrantRow>>({}); const [preparedJob, setPreparedJob] = useState<Job|null>(null); const [confirmed, setConfirmed] = useState(false);
+  const [keys, setKeys] = useState<SshKey[]>([]);
+  const [grants, setGrants] = useState<AccessGrant[]>([]);
+  const [keyText, setKeyText] = useState("");
+  const [rows, setRows] = useState<Record<string, GrantRow>>({});
+  const [preparedJob, setPreparedJob] = useState<Job|null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   const defaultTemplate = templates.find((template) => template.enabled)?.id || "";
-  const loadDetail = async () => { try { const [nextKeys, nextGrants] = await Promise.all([api<SshKey[]>(`/users/${user.id}/keys`), api<AccessGrant[]>(`/users/${user.id}/access-grants`)]); setKeys(nextKeys); setGrants(nextGrants); setRows((current) => Object.fromEntries(hosts.map((host) => [host.id, current[host.id] || { selected:false, username:user.username, permissionTemplateId:defaultTemplate, groupsOverride:"", sudoRuleOverride:"", advanced:false }]))); } catch (cause) { onError(message(cause, "无法读取成员授权信息")); } };
+  const loadDetail = async () => {
+    try {
+      const [nextKeys, nextGrants] = await Promise.all([api<SshKey[]>(`/users/${user.id}/keys`), api<AccessGrant[]>(`/users/${user.id}/access-grants`)]);
+      setKeys(nextKeys);
+      setGrants(nextGrants);
+      setRows((current) => Object.fromEntries(hosts.map((host) => [host.id, current[host.id] || {
+        selected:false, username:user.username, accountOrigin:"created", permissionTemplateId:defaultTemplate,
+        groupsOverride:"", sudoRuleOverride:"", advanced:false, inventory:[], inventoryLoading:false, inventoryLoaded:false,
+      }])));
+    } catch (cause) { onError(message(cause, "无法读取成员授权信息")); }
+  };
   useEffect(() => { void loadDetail(); }, [user.id, hosts.length, templates.length]);
   useEffect(() => {
     if (preparedJob?.state !== "preview_running") return;
@@ -91,15 +109,93 @@ function MemberWorkbench({ user, hosts, templates, onError, onJob }:{ user:User;
     return () => { disposed = true; window.clearInterval(timer); };
   }, [preparedJob?.id, preparedJob?.state, onError, onJob]);
   const changeRow = (hostId:string, update:Partial<GrantRow>) => setRows((current) => ({ ...current, [hostId]:{ ...current[hostId], ...update } }));
-  const provisionRows = hosts.filter((host) => rows[host.id]?.selected).map((host) => { const row = rows[host.id]; return { host_id:host.id, username:row.username, permission_template_id:row.permissionTemplateId || null, groups_override:row.groupsOverride ? row.groupsOverride.split(",").map((value) => value.trim()).filter(Boolean) : null, sudo_rule_override:row.sudoRuleOverride || null }; });
-  const preview = async () => { if (!provisionRows.length) { onError("请至少勾选一台已配置数据根目录的机器"); return; } try { const job = await api<Job>(`/users/${user.id}/access-grants/preview`, { method:"POST", body:JSON.stringify({ grants:provisionRows }) }); setPreparedJob(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "开通预检失败")); } };
+  const chooseOrigin = async (host:Host, accountOrigin:"created"|"adopted") => {
+    changeRow(host.id, { accountOrigin, selected:false, advanced:false, username:accountOrigin === "created" ? user.username : rows[host.id].username });
+    if (accountOrigin === "created" || rows[host.id].inventoryLoaded || rows[host.id].inventoryLoading) return;
+    changeRow(host.id, { inventoryLoading:true });
+    try {
+      const inventory = await api<HostUser[]>(`/hosts/${host.id}/users`);
+      const first = inventory[0];
+      const firstKeys = first ? await api<HostUser["public_keys"]>(`/hosts/${host.id}/users/${first.username}/keys`) : [];
+      const inventoryWithKeys = first ? inventory.map((account) => account.username === first.username ? { ...account, public_keys:firstKeys } : account) : inventory;
+      changeRow(host.id, { inventory:inventoryWithKeys, inventoryLoaded:true, inventoryLoading:false, username:first?.username || "" });
+    } catch (cause) {
+      changeRow(host.id, { inventoryLoading:false });
+      onError(message(cause, `无法盘点 ${host.name} 的已有账号`));
+    }
+  };
+  const chooseExistingAccount = async (host:Host, username:string) => {
+    changeRow(host.id, { username });
+    if (!username) return;
+    try {
+      const publicKeys = await api<HostUser["public_keys"]>(`/hosts/${host.id}/users/${username}/keys`);
+      setRows((current) => ({
+        ...current,
+        [host.id]:{
+          ...current[host.id],
+          inventory:current[host.id].inventory.map((account) => account.username === username ? { ...account, public_keys:publicKeys } : account),
+        },
+      }));
+    } catch (cause) { onError(message(cause, `无法读取 ${host.name} 上 ${username} 的公钥`)); }
+  };
+  const provisionRows = hosts.filter((host) => rows[host.id]?.selected).map((host):ProvisionRow|null => {
+    const row = rows[host.id];
+    if (row.accountOrigin === "adopted") {
+      const existing = row.inventory.find((account) => account.username === row.username);
+      return existing ? { host_id:host.id, username:existing.username, account_origin:"adopted", existing_account:{ uid:existing.uid, primary_group:existing.primary_group, home:existing.home, public_key_fingerprints:existing.public_keys.map((key) => key.fingerprint) } } : null;
+    }
+    return {
+      host_id:host.id, username:row.username, account_origin:"created",
+      permission_template_id:row.permissionTemplateId || null,
+      groups_override:row.groupsOverride ? row.groupsOverride.split(",").map((value) => value.trim()).filter(Boolean) : null,
+      sudo_rule_override:row.sudoRuleOverride || null,
+    };
+  }).filter((row):row is ProvisionRow => row !== null);
+  const preview = async () => {
+    const selectedRows = hosts.filter((host) => rows[host.id]?.selected);
+    if (!selectedRows.length) { onError("请至少勾选一台机器"); return; }
+    if (selectedRows.some((host) => rows[host.id].accountOrigin === "adopted" && !rows[host.id].inventory.some((account) => account.username === rows[host.id].username))) { onError("请为纳管机器选择已有账号"); return; }
+    try {
+      const job = await api<Job>(`/users/${user.id}/access-grants/preview`, { method:"POST", body:JSON.stringify({ grants:provisionRows }) });
+      setPreparedJob(job); setConfirmed(false); onJob(job);
+    } catch (cause) { onError(message(cause, "开通预检失败")); }
+  };
   const execute = async () => { if (!preparedJob) return; try { const job = await api<Job>(`/access-grant-jobs/${preparedJob.id}/execute`, { method:"POST" }); setPreparedJob(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "执行开通失败")); } };
   const activeGrants = grants.filter((grant) => grant.state === "active");
-  return <><section className="member-summary"><div><span className="section-kicker">成员档案</span><h2>{user.display_name || user.username}</h2><p>{user.username} · 密钥登录</p></div><div className="summary-count"><b>{activeGrants.length}</b><span>已开通机器</span></div></section><section className="key-strip"><div><h3>SSH 公钥</h3><p>{keys.length ? `${keys.length} 把启用公钥` : "还没有启用公钥，不能开通"}</p></div><details><summary>管理公钥</summary><div className="key-management">{keys.map((key) => <code key={key.id}>{key.fingerprint} {key.comment}</code>)}<form onSubmit={(event) => { event.preventDefault(); void api<SshKey>(`/users/${user.id}/keys`, { method:"POST", body:JSON.stringify({ public_key:keyText }) }).then(() => { setKeyText(""); void loadDetail(); }).catch((cause) => onError(message(cause, "保存公钥失败"))); }}><textarea aria-label="SSH 公钥内容" placeholder="ssh-ed25519 AAAA..." value={keyText} onChange={(event) => setKeyText(event.target.value)}/><Button type="submit" disabled={!keyText.trim()}>添加公钥</Button></form></div></details></section><section className="workbench"><div className="workbench-heading"><div><span className="section-kicker">批量开通</span><h3>选择机器并逐行配置账号</h3></div><Button disabled={!keys.length} onClick={() => void preview()}>预检开通 <ChevronRight size={16}/></Button></div><div className="grant-table"><table><thead><tr><th>选择</th><th>机器</th><th>用户名</th><th>权限</th><th>实际数据目录</th><th>状态</th></tr></thead><tbody>{hosts.map((host) => { const row = rows[host.id]; if (!row) return null; const eligible = host.status === "reachable" && Boolean(host.data_root); const template = templates.find((item) => item.id === row.permissionTemplateId); return <Fragment key={host.id}><tr className={!eligible ? "blocked" : ""}><td><input aria-label={`选择 ${host.name}`} type="checkbox" checked={row.selected} disabled={!eligible} onChange={(event) => changeRow(host.id, { selected:event.target.checked })}/></td><td><b>{host.name}</b><small>{host.address} · {host.tags.join(" / ") || "未标记"}</small></td><td><input aria-label={`${host.name} 用户名`} value={row.username} disabled={!eligible} onChange={(event) => changeRow(host.id, { username:event.target.value })}/></td><td><select aria-label={`${host.name} 权限模板`} value={row.permissionTemplateId} disabled={!eligible} onChange={(event) => changeRow(host.id, { permissionTemplateId:event.target.value })}><option value="">自定义最小权限</option>{templates.filter((item) => item.enabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="row-link" onClick={() => changeRow(host.id, { advanced:!row.advanced })}>覆盖</button></td><td><code>{host.data_root ? `${host.data_root}/${row.username || "用户名"}` : "先配置数据根目录"}</code></td><td><State state={eligible ? host.status : "unconfigured"}/></td></tr>{row.advanced && <tr className="advanced-row"><td/><td colSpan={5}><label>附加组<input placeholder={template?.groups.join(",") || "例如 docker"} value={row.groupsOverride} onChange={(event) => changeRow(host.id, { groupsOverride:event.target.value })}/></label><label>sudo 规则<input placeholder={template?.sudo_rule || "留空表示不授予 sudo"} value={row.sudoRuleOverride} onChange={(event) => changeRow(host.id, { sudoRuleOverride:event.target.value })}/></label></td></tr>}</Fragment>; })}</tbody></table></div>{preparedJob && <section className="prepared"><div><State state={preparedJob.state}/><strong>批次已生成</strong><span>预检结果可在执行记录中查看。</span></div>{preparedJob.state === "ready_to_confirm" && <div className="confirm-line"><label><input aria-label="我已核对本批次变更" type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>我已核对本批次变更</label><Button disabled={!confirmed} onClick={() => void execute()}>确认并开通</Button></div>}</section>}</section><GrantList userId={user.id} grants={activeGrants} onError={onError} onJob={onJob}/></>;
+  return <>
+    <section className="member-summary"><div><span className="section-kicker">成员档案</span><h2>{user.display_name || user.username}</h2><p>{user.username} · 密钥登录</p></div><div className="summary-count"><b>{activeGrants.length}</b><span>已开通机器</span></div></section>
+    <section className="key-strip"><div><h3>SSH 公钥</h3><p>{keys.length ? `${keys.length} 把启用公钥` : "还没有启用公钥，不能开通"}</p></div><details><summary>管理公钥</summary><div className="key-management">{keys.map((key) => <code key={key.id}>{key.fingerprint} {key.comment}</code>)}<form onSubmit={(event) => { event.preventDefault(); void api<SshKey>(`/users/${user.id}/keys`, { method:"POST", body:JSON.stringify({ public_key:keyText }) }).then(() => { setKeyText(""); void loadDetail(); }).catch((cause) => onError(message(cause, "保存公钥失败"))); }}><textarea aria-label="SSH 公钥内容" placeholder="ssh-ed25519 AAAA..." value={keyText} onChange={(event) => setKeyText(event.target.value)}/><Button type="submit" disabled={!keyText.trim()}>添加公钥</Button></form></div></details></section>
+    <section className="workbench">
+      <div className="workbench-heading"><div><span className="section-kicker">批量开通</span><h3>选择机器与账号方式</h3></div><Button disabled={!keys.length} onClick={() => void preview()}>预检开通 <ChevronRight size={16}/></Button></div>
+      <div className="grant-table"><table><thead><tr><th>机器</th><th>账号</th><th>权限与位置</th></tr></thead><tbody>{hosts.map((host) => {
+        const row = rows[host.id]; if (!row) return null;
+        const reachable = host.status === "reachable";
+        const eligible = reachable && (row.accountOrigin === "adopted" || Boolean(host.data_root));
+        const template = templates.find((item) => item.id === row.permissionTemplateId);
+        const existing = row.inventory.find((account) => account.username === row.username);
+        return <Fragment key={host.id}>
+          <tr className={!eligible ? "blocked" : ""}>
+            <td><div className="host-machine"><label className="host-select"><input aria-label={`选择 ${host.name}`} type="checkbox" checked={row.selected} disabled={!eligible || (row.accountOrigin === "adopted" && !existing)} onChange={(event) => changeRow(host.id, { selected:event.target.checked })}/><span><b>{host.name}</b><small>{host.address} · {host.tags.join(" / ") || "未标记"}</small></span></label><State state={eligible ? host.status : "unconfigured"}/></div></td>
+            <td><div className="account-cell"><div className="mode-switch"><button className={row.accountOrigin === "created" ? "active" : ""} aria-pressed={row.accountOrigin === "created"} onClick={() => void chooseOrigin(host, "created")}>创建新账号</button><button className={row.accountOrigin === "adopted" ? "active" : ""} aria-pressed={row.accountOrigin === "adopted"} disabled={!reachable} onClick={() => void chooseOrigin(host, "adopted")}>纳管已有账号</button></div>{row.accountOrigin === "created" ? <input aria-label={`${host.name} 用户名`} value={row.username} disabled={!eligible} onChange={(event) => changeRow(host.id, { username:event.target.value })}/> : <div className="existing-account"><select aria-label={`${host.name} 已有账号`} value={row.username} disabled={row.inventoryLoading} onChange={(event) => void chooseExistingAccount(host, event.target.value)}><option value="">{row.inventoryLoading ? "正在盘点..." : "选择已有账号"}</option>{row.inventory.map((account) => <option key={account.username} value={account.username}>{account.username}</option>)}</select>{existing && <small>UID {existing.uid} · {existing.primary_group} · {existing.home} · {existing.public_keys.length} 把现有密钥</small>}</div>}</div></td>
+            <td>{row.accountOrigin === "created" ? <><select aria-label={`${host.name} 权限模板`} value={row.permissionTemplateId} disabled={!eligible} onChange={(event) => changeRow(host.id, { permissionTemplateId:event.target.value })}><option value="">自定义最小权限</option>{templates.filter((item) => item.enabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="row-link" onClick={() => changeRow(host.id, { advanced:!row.advanced })}>覆盖</button><code className="path-preview">{host.data_root ? `${host.data_root}/${row.username || "用户名"}` : "先配置数据根目录"}</code></> : <><b>保留现有权限</b><small>不迁移 home，不修改组和 sudo</small></>}</td>
+          </tr>
+          {row.accountOrigin === "created" && row.advanced && <tr className="advanced-row"><td colSpan={3}><label>附加组<input placeholder={template?.groups.join(",") || "例如 docker"} value={row.groupsOverride} onChange={(event) => changeRow(host.id, { groupsOverride:event.target.value })}/></label><label>sudo 规则<input placeholder={template?.sudo_rule || "留空表示不授予 sudo"} value={row.sudoRuleOverride} onChange={(event) => changeRow(host.id, { sudoRuleOverride:event.target.value })}/></label></td></tr>}
+        </Fragment>;
+      })}</tbody></table></div>
+      {preparedJob && preparedJob.state !== "ready_to_confirm" && <section className="prepared"><div><State state={preparedJob.state}/><strong>正在生成预检</strong><span>完成后将在这里展示逐机命令。</span></div></section>}
+      {preparedJob?.state === "ready_to_confirm" && (
+        <CommandReview job={preparedJob} confirmed={confirmed} executeLabel="确认并开通" onConfirmed={setConfirmed} onExecute={() => void execute()}/>
+      )}
+    </section>
+    <GrantList userId={user.id} grants={activeGrants} onError={onError} onJob={onJob}/>
+  </>;
 }
 
 function GrantList({ userId, grants, onError, onJob }:{ userId:string; grants:AccessGrant[]; onError:(value:string)=>void; onJob:(job:Job)=>void }) {
-  const [selected, setSelected] = useState<Record<string, boolean>>({}); const [deleteData, setDeleteData] = useState<Record<string, boolean>>({}); const [prepared, setPrepared] = useState<Job|null>(null); const [confirmed, setConfirmed] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [deleteData, setDeleteData] = useState<Record<string, boolean>>({});
+  const [prepared, setPrepared] = useState<Job|null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   useEffect(() => {
     if (prepared?.state !== "preview_running") return;
     let disposed = false;
@@ -110,9 +206,26 @@ function GrantList({ userId, grants, onError, onJob }:{ userId:string; grants:Ac
     const timer = window.setInterval(refresh, 1000);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [prepared?.id, prepared?.state, onError, onJob]);
-  const preview = async () => { const rows = grants.filter((grant) => selected[grant.id]).map((grant) => ({ grant_id:grant.id, delete_data:Boolean(deleteData[grant.id]) })); if (!rows.length) { onError("请先勾选要回收的机器权限"); return; } try { const job = await api<Job>(`/users/${userId}/access-grants/revoke/preview`, { method:"POST", body:JSON.stringify({ grants:rows }) }); setPrepared(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "回收预检失败")); } };
+  const preview = async () => {
+    const rows = grants.filter((grant) => selected[grant.id]).map((grant) => ({ grant_id:grant.id, delete_data:grant.account_origin === "created" && Boolean(deleteData[grant.id]) }));
+    if (!rows.length) { onError("请先勾选要回收的机器权限"); return; }
+    try { const job = await api<Job>(`/users/${userId}/access-grants/revoke/preview`, { method:"POST", body:JSON.stringify({ grants:rows }) }); setPrepared(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "回收预检失败")); }
+  };
   const execute = async () => { if (!prepared) return; try { const job = await api<Job>(`/access-grant-jobs/${prepared.id}/execute`, { method:"POST" }); setPrepared(job); setConfirmed(false); onJob(job); } catch (cause) { onError(message(cause, "执行回收失败")); } };
-  return <section className="existing-grants"><div className="workbench-heading"><div><span className="section-kicker">已开通</span><h3>机器权限</h3></div>{grants.length > 0 && <Button className="text-button" onClick={() => void preview()}>预检回收</Button>}</div>{grants.length ? <div className="grant-chips">{grants.map((grant) => <div key={grant.id} className={selected[grant.id] ? "revoke-selected" : ""}><label><input aria-label={`回收 ${grant.host_name}`} type="checkbox" checked={Boolean(selected[grant.id])} onChange={(event) => setSelected({ ...selected, [grant.id]:event.target.checked })}/><b>{grant.host_name}</b></label><span>{grant.username}</span><code>{grant.data_directory}</code><label className="delete-data"><input aria-label={`删除 ${grant.host_name} 数据目录`} type="checkbox" checked={Boolean(deleteData[grant.id])} onChange={(event) => setDeleteData({ ...deleteData, [grant.id]:event.target.checked })}/>删除数据目录</label><State state={grant.state}/></div>)}</div> : <p className="empty-inline">还没有机器权限。</p>}{prepared && <section className="prepared revoke-prepared"><div><State state={prepared.state}/><strong>回收批次已生成</strong><span>数据目录只会删除已明确勾选的行。</span></div>{prepared.state === "ready_to_confirm" && <div className="confirm-line"><label><input aria-label="我已核对回收变更" type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>我已核对回收变更</label><Button disabled={!confirmed} onClick={() => void execute()}>确认并回收</Button></div>}</section>}</section>;
+  return <section className="existing-grants">
+    <div className="workbench-heading"><div><span className="section-kicker">已开通</span><h3>机器权限</h3></div>{grants.length > 0 && <Button className="text-button" onClick={() => void preview()}>预检回收</Button>}</div>
+    {grants.length ? <div className="grant-chips">{grants.map((grant) => <div key={grant.id} className={selected[grant.id] ? "revoke-selected" : ""}>
+      <label><input aria-label={`回收 ${grant.host_name}`} type="checkbox" checked={Boolean(selected[grant.id])} onChange={(event) => setSelected({ ...selected, [grant.id]:event.target.checked })}/><b>{grant.host_name}</b></label>
+      <span>{grant.username} · {grant.account_origin === "adopted" ? "已有账号纳管" : "平台创建"}</span>
+      <code>{grant.account_origin === "adopted" ? grant.remote_home : grant.data_directory}</code>
+      {grant.account_origin === "created" ? <label className="delete-data"><input aria-label={`删除 ${grant.host_name} 数据目录`} type="checkbox" checked={Boolean(deleteData[grant.id])} onChange={(event) => setDeleteData({ ...deleteData, [grant.id]:event.target.checked })}/>删除数据目录</label> : <small>回收时移除平台密钥并锁定账号</small>}
+      <State state={grant.state}/>
+    </div>)}</div> : <p className="empty-inline">还没有机器权限。</p>}
+    {prepared && prepared.state !== "ready_to_confirm" && <section className="prepared"><div><State state={prepared.state}/><strong>正在生成回收预检</strong></div></section>}
+    {prepared?.state === "ready_to_confirm" && (
+      <CommandReview job={prepared} confirmed={confirmed} executeLabel="确认并回收" onConfirmed={setConfirmed} onExecute={() => void execute()}/>
+    )}
+  </section>;
 }
 
 function MachinesView({ hosts, onChanged, onError }:{ hosts:Host[]; onChanged:()=>Promise<void>; onError:(value:string)=>void }) { const [form, setForm] = useState({ name:"", address:"", ssh_user:"root", data_root:"" }); return <><section className="machine-intro"><Database size={22}/><div><span className="section-kicker">基础设施配置</span><h2>机器只需配置一次连接与数据根目录</h2><p>开通时将自动使用此机器自己的根目录，创建成员专属数据目录和 `/home` 软链接。</p></div></section><section className="machine-table"><table><thead><tr><th>机器</th><th>管理连接</th><th>数据根目录</th><th>状态</th><th/></tr></thead><tbody>{hosts.map((host) => <MachineRow key={host.id} host={host} onChanged={onChanged} onError={onError}/>)}</tbody></table></section><form className="add-machine" onSubmit={(event) => { event.preventDefault(); void api<Host>("/hosts", { method:"POST", body:JSON.stringify({ ...form, port:22, tags:[] }) }).then(onChanged).catch((cause) => onError(message(cause, "添加机器失败"))); }}><span className="section-kicker">接入机器</span><input placeholder="名称" value={form.name} onChange={(event) => setForm({ ...form, name:event.target.value })}/><input placeholder="IP 或 FQDN" value={form.address} onChange={(event) => setForm({ ...form, address:event.target.value })}/><input placeholder="管理 SSH 用户" value={form.ssh_user} onChange={(event) => setForm({ ...form, ssh_user:event.target.value })}/><input placeholder="数据根目录，例如 /mnt/train" value={form.data_root} onChange={(event) => setForm({ ...form, data_root:event.target.value })}/><Button type="submit">添加机器</Button></form></>; }
@@ -128,7 +241,11 @@ function TemplatesView({ templates, onChanged, onError }:{ templates:PermissionT
 function JobsView({ jobs, onExecute }:{ jobs:Job[]; onExecute:(job:Job)=>Promise<void> }) {
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
   const command = (job:Job) => job.kind === "access_grant_provision" ? "确认并开通" : job.kind === "access_grant_revoke" ? "确认并回收" : "确认并执行";
-  return <section className="jobs-table"><table><thead><tr><th>批次</th><th>创建时间</th><th>目标机器</th><th>状态</th><th>操作</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.id}><td><b>{job.kind === "access_grant_provision" ? "批量开通" : job.kind === "access_grant_revoke" ? "批量回收" : job.kind}</b><small>{job.id}</small></td><td>{new Date(job.created_at).toLocaleString()}</td><td>{job.targets?.map((target) => target.host_name).join(" / ") || "-"}</td><td><State state={job.state}/></td><td>{job.state === "ready_to_confirm" ? <div className="job-action"><label><input aria-label={`确认批次 ${job.id}`} type="checkbox" checked={Boolean(confirmed[job.id])} onChange={(event) => setConfirmed({ ...confirmed, [job.id]:event.target.checked })}/>确认变更</label><Button disabled={!confirmed[job.id]} onClick={() => void onExecute(job)}>{command(job)}</Button></div> : "-"}</td></tr>)}</tbody></table>{!jobs.length && <EmptyState/>}</section>;
+  const readyJobs = jobs.filter((job) => job.state === "ready_to_confirm" && job.kind.startsWith("access_grant_"));
+  return <>
+    <section className="jobs-table"><table><thead><tr><th>批次</th><th>创建时间</th><th>目标机器</th><th>状态</th><th>操作</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.id}><td><b>{job.kind === "access_grant_provision" ? "批量开通" : job.kind === "access_grant_revoke" ? "批量回收" : job.kind}</b><small>{job.id}</small></td><td>{new Date(job.created_at).toLocaleString()}</td><td>{job.targets?.map((target) => target.host_name).join(" / ") || "-"}</td><td><State state={job.state}/></td><td>{job.state === "ready_to_confirm" ? "查看下方命令" : "-"}</td></tr>)}</tbody></table>{!jobs.length && <EmptyState/>}</section>
+    <div className="job-reviews">{readyJobs.map((job) => <CommandReview key={job.id} job={job} confirmed={Boolean(confirmed[job.id])} executeLabel={command(job)} onConfirmed={(value) => setConfirmed({ ...confirmed, [job.id]:value })} onExecute={() => void onExecute(job)}/>)}</div>
+  </>;
 }
 
 function State({ state }:{ state:string }) { return <span className={`state state-${state}`}>{stateLabel[state] || (state === "unconfigured" ? "未配置" : state)}</span>; }

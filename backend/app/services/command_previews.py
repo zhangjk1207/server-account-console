@@ -73,6 +73,14 @@ def _created_preview(operation: str, grant: dict, public_keys: list[str]) -> dic
             f"chown {_quote(username)}:{_quote(username)} {_quote(data_directory + '/.ssh/authorized_keys')}",
             f"chmod 600 {_quote(data_directory + '/.ssh/authorized_keys')}",
         ])
+        sudoers_path = f"/etc/sudoers.d/server-account-{username}"
+        if grant.get("sudo_rule"):
+            policy = f"{username} {grant['sudo_rule']}"
+            commands.append(
+                f"printf '%s\\n' {_quote(policy)} > {_quote(sudoers_path)} && chmod 440 {_quote(sudoers_path)} && visudo -cf {_quote(sudoers_path)}"
+            )
+        else:
+            commands.append(f"rm -f {_quote(sudoers_path)}")
         return {
             "label": "等价命令，实际由 Ansible 模块执行",
             "tasks": ["创建账号和数据目录", "创建 home 软链接", "安装成员 SSH 公钥", "应用权限模板"],
@@ -86,7 +94,7 @@ def _created_preview(operation: str, grant: dict, public_keys: list[str]) -> dic
         f"rm -f {_quote('/etc/sudoers.d/server-account-' + username)}",
     ]
     if grant.get("delete_data"):
-        commands.append(f"rm -rf --one-file-system {_quote(data_directory)}")
+        commands.append(f"rm -rf -- {_quote(data_directory)}")
     return {
         "label": "等价命令，实际由 Ansible 模块执行",
         "tasks": ["核对受控 home 软链接", "删除平台创建的账号", "按选择保留或删除数据目录"],

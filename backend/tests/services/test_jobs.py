@@ -148,6 +148,109 @@ def test_successful_access_grant_targets_update_only_matching_grants() -> None:
         assert grant.last_success_job_id == job.id
 
 
+def test_successful_adopted_grant_preserves_identity_and_accumulates_managed_keys() -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-adopted", address="192.0.2.31")
+        user = ManagedUser(username="alice")
+        job = Job(
+            kind="access_grant_provision",
+            state="succeeded",
+            user_snapshot={
+                "id": "placeholder",
+                "public_keys": ["ssh-ed25519 AAAA current"],
+                "key_fingerprints": ["SHA256:current"],
+            },
+            request_snapshot={"user_id": "placeholder", "operation": "provision", "grants": []},
+        )
+        session.add_all([host, user, job])
+        session.flush()
+        existing = HostAccessGrant(
+            host_id=host.id,
+            managed_user_id=user.id,
+            username="legacy-alice",
+            account_origin="adopted",
+            remote_uid=1007,
+            remote_primary_group="research",
+            remote_home="/srv/homes/legacy-alice",
+            managed_public_keys=["ssh-ed25519 AAAA previous"],
+            managed_key_fingerprints=["SHA256:previous"],
+            data_directory=None,
+        )
+        session.add(existing)
+        job.user_snapshot = {
+            "id": user.id,
+            "public_keys": ["ssh-ed25519 AAAA current"],
+            "key_fingerprints": ["SHA256:current"],
+        }
+        job.request_snapshot = {
+            "user_id": user.id,
+            "operation": "provision",
+            "grants": [{
+                "host_id": host.id,
+                "username": "legacy-alice",
+                "account_origin": "adopted",
+                "permission_template_id": None,
+                "template": {"name": "保留已有权限", "groups": [], "sudo_rule": None},
+                "groups_override": None,
+                "sudo_rule_override": None,
+                "data_directory": None,
+                "remote_uid": 1007,
+                "remote_primary_group": "research",
+                "remote_home": "/srv/homes/legacy-alice",
+            }],
+        }
+        session.add(JobTarget(job_id=job.id, host_id=host.id, state="succeeded"))
+        session.commit()
+
+        jobs.finalize_access_grants(session, job)
+
+        session.refresh(existing)
+        assert existing.account_origin == "adopted"
+        assert existing.remote_uid == 1007
+        assert existing.remote_primary_group == "research"
+        assert existing.remote_home == "/srv/homes/legacy-alice"
+        assert existing.data_directory is None
+        assert existing.managed_public_keys == ["ssh-ed25519 AAAA previous", "ssh-ed25519 AAAA current"]
+        assert existing.managed_key_fingerprints == ["SHA256:previous", "SHA256:current"]
+
+
+def test_successful_adopted_revoke_keeps_key_audit_while_marking_grant_revoked() -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-adopted-revoke", address="192.0.2.32")
+        user = ManagedUser(username="alice")
+        session.add_all([host, user])
+        session.flush()
+        grant = HostAccessGrant(
+            host_id=host.id,
+            managed_user_id=user.id,
+            username="legacy-alice",
+            account_origin="adopted",
+            remote_uid=1007,
+            remote_primary_group="research",
+            remote_home="/srv/homes/legacy-alice",
+            managed_public_keys=["ssh-ed25519 AAAA managed"],
+            managed_key_fingerprints=["SHA256:managed"],
+            data_directory=None,
+        )
+        job = Job(kind="access_grant_revoke", state="succeeded", user_snapshot={}, request_snapshot={})
+        session.add_all([grant, job])
+        session.flush()
+        job.request_snapshot = {
+            "user_id": user.id,
+            "operation": "revoke",
+            "grants": [{"grant_id": grant.id, "host_id": host.id, "account_origin": "adopted"}],
+        }
+        session.add(JobTarget(job_id=job.id, host_id=host.id, state="succeeded"))
+        session.commit()
+
+        jobs.finalize_access_grants(session, job)
+
+        session.refresh(grant)
+        assert grant.state == "revoked"
+        assert grant.managed_public_keys == ["ssh-ed25519 AAAA managed"]
+        assert grant.managed_key_fingerprints == ["SHA256:managed"]
+
+
 def test_lock_conflict_does_not_create_an_orphan_preview() -> None:
     assert jobs.RUNNER_LOCK.acquire(blocking=False)
     try:
@@ -225,6 +328,46 @@ def test_access_grant_execution_rejects_a_changed_data_root(monkeypatch) -> None
             jobs.start_job(session, job, check=False)
 
         assert session.get(Job, job.id).state == "ready_to_confirm"
+
+
+def test_adopted_access_grant_execution_accepts_a_snapshot_without_data_root(monkeypatch) -> None:
+    with SessionLocal() as session:
+        host = Host(name="gpu-adopted-execute", address="192.0.2.35", status="reachable", host_key_fingerprint="SHA256:known")
+        user = ManagedUser(username="alice")
+        job = Job(
+            kind="access_grant_provision",
+            state="ready_to_confirm",
+            user_snapshot={"id": "placeholder", "public_keys": ["ssh-ed25519 AAAA alice"]},
+            request_snapshot={"user_id": "placeholder", "hosts": [], "grants": []},
+        )
+        session.add_all([host, user, job])
+        session.flush()
+        job.user_snapshot = {"id": user.id, "public_keys": ["ssh-ed25519 AAAA alice"]}
+        job.request_snapshot = {
+            "user_id": user.id,
+            "hosts": [{"id": host.id, "name": host.name}],
+            "grants": [{
+                "host_id": host.id,
+                "username": "legacy-alice",
+                "account_origin": "adopted",
+                "data_root": None,
+                "data_directory": None,
+                "remote_uid": 1007,
+                "remote_primary_group": "research",
+                "remote_home": "/srv/homes/legacy-alice",
+            }],
+        }
+        session.add_all([
+            SshPublicKey(managed_user_id=user.id, public_key="ssh-ed25519 AAAA alice", fingerprint="SHA256:alice", comment="alice"),
+            HostCredential(host_id=host.id, private_key_ciphertext="cipher", sudo_password_ciphertext="cipher", ssh_verified=True, sudo_verified=True),
+            JobTarget(job_id=job.id, host_id=host.id, state="succeeded"),
+        ])
+        session.commit()
+        monkeypatch.setattr(jobs, "_launch_worker", lambda *_args: jobs.RUNNER_LOCK.release())
+
+        started = jobs.start_job(session, job, check=False)
+
+        assert started.state == "running"
 
 
 def test_sync_runner_private_data_is_removed_after_persisting_redacted_events(monkeypatch, tmp_path) -> None:

@@ -1,0 +1,75 @@
+- name: Validate adopted account snapshot fields
+  ansible.builtin.assert:
+    that:
+      - access_grant.username is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - access_grant.remote_uid | int >= 1000
+      - access_grant.remote_primary_group | length > 0
+      - access_grant.remote_home is match('^/.+')
+    fail_msg: "纳管账号快照不完整或不安全"
+
+- name: Read adopted account record
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ access_grant.username }}"
+    fail_key: false
+
+- name: Read adopted account primary group
+  ansible.builtin.getent:
+    database: group
+    key: "{{ access_grant.remote_primary_group }}"
+    fail_key: false
+
+- name: Assert adopted account identity has not changed
+  ansible.builtin.assert:
+    that:
+      - access_grant.username in ansible_facts.getent_passwd
+      - ansible_facts.getent_passwd[access_grant.username][1] | int == access_grant.remote_uid | int
+      - ansible_facts.getent_passwd[access_grant.username][4] == access_grant.remote_home
+      - access_grant.remote_primary_group in ansible_facts.getent_group
+      - ansible_facts.getent_group[access_grant.remote_primary_group][1] | string == ansible_facts.getent_passwd[access_grant.username][2] | string
+    fail_msg: "已有账号的 UID、主组或 home 已变化，请重新盘点和预检"
+
+- name: Inspect adopted account home
+  ansible.builtin.stat:
+    path: "{{ access_grant.remote_home }}"
+  register: adopted_home
+
+- name: Require the adopted account home to remain a directory
+  ansible.builtin.assert:
+    that:
+      - adopted_home.stat.exists
+      - adopted_home.stat.isdir
+    fail_msg: "已有账号的 home 不存在或不是目录"
+
+- name: Unlock adopted account without changing identity fields
+  ansible.builtin.user:
+    name: "{{ access_grant.username }}"
+    state: present
+    password_lock: false
+
+- name: Ensure adopted account SSH directory exists
+  ansible.builtin.file:
+    path: "{{ access_grant.remote_home }}/.ssh"
+    state: directory
+    owner: "{{ access_grant.username }}"
+    group: "{{ access_grant.remote_primary_group }}"
+    mode: "0700"
+  when: not ansible_check_mode
+
+- name: Append enabled member keys without replacing existing keys
+  ansible.builtin.lineinfile:
+    path: "{{ access_grant.remote_home }}/.ssh/authorized_keys"
+    line: "{{ item }}"
+    state: present
+    create: true
+    owner: "{{ access_grant.username }}"
+    group: "{{ access_grant.remote_primary_group }}"
+    mode: "0600"
+  loop: "{{ access_grant_user.public_keys }}"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Record adopted account key changes during preview
+  ansible.builtin.debug:
+    msg: "正式执行时将保留现有公钥，并向 {{ access_grant.remote_home }}/.ssh/authorized_keys 追加 {{ access_grant_user.public_keys | length }} 把成员公钥"
+  when: ansible_check_mode

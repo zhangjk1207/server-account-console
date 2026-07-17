@@ -126,6 +126,7 @@ def create_access_grant_job(
                     "remote_uid": row.existing_account.uid,
                     "remote_primary_group": row.existing_account.primary_group,
                     "remote_home": row.existing_account.home,
+                    "existing_key_fingerprints": list(row.existing_account.public_key_fingerprints),
                     "managed_public_keys": [] if existing_grant is None else list(existing_grant.managed_public_keys),
                     "managed_key_fingerprints": [] if existing_grant is None else list(existing_grant.managed_key_fingerprints),
                     "delete_data": False,
@@ -154,6 +155,7 @@ def create_access_grant_job(
                 }
             preview = build_grant_command_preview(operation, snapshot, public_keys)
             preview["key_fingerprints"] = key_fingerprints
+            preview["existing_key_fingerprints"] = list(snapshot.get("existing_key_fingerprints", []))
             snapshot["command_preview"] = preview
             snapshots.append(snapshot)
             hosts.append(host)
@@ -191,6 +193,7 @@ def create_access_grant_job(
             }
             preview = build_grant_command_preview(operation, snapshot, [])
             preview["key_fingerprints"] = list(grant.managed_key_fingerprints)
+            preview["existing_key_fingerprints"] = []
             snapshot["command_preview"] = preview
             snapshots.append(snapshot)
             hosts.append(host)

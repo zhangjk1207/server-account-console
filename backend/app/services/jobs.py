@@ -164,7 +164,24 @@ def require_current_access_grant_state(session: Session, job: Job) -> None:
         data_root = row.get("data_root")
         username = row.get("username")
         data_directory = row.get("data_directory")
-        if host is None or not isinstance(data_root, str) or not isinstance(username, str) or not isinstance(data_directory, str):
+        if host is None or not isinstance(username, str):
+            raise JobStateError("授权任务快照无效")
+        if row.get("account_origin", "created") == "adopted":
+            remote_uid = row.get("remote_uid")
+            remote_group = row.get("remote_primary_group")
+            remote_home = row.get("remote_home")
+            if (
+                data_root is not None
+                or data_directory is not None
+                or not isinstance(remote_uid, int)
+                or remote_uid < 1000
+                or not isinstance(remote_group, str)
+                or not isinstance(remote_home, str)
+                or not remote_home.startswith("/")
+            ):
+                raise JobStateError("纳管账号任务快照无效")
+            continue
+        if not isinstance(data_root, str) or not isinstance(data_directory, str):
             raise JobStateError("授权任务快照无效")
         if host.data_root != data_root:
             raise JobStateError(f"机器 {host.name} 的数据根目录已变化，需要重新预检")
@@ -360,14 +377,31 @@ def finalize_access_grants(session: Session, job: Job) -> None:
                 select(HostAccessGrant).where(HostAccessGrant.host_id == host_id, HostAccessGrant.managed_user_id == user_id)
             )
             if grant is None:
-                grant = HostAccessGrant(host_id=host_id, managed_user_id=user_id, username=str(row["username"]), data_directory=str(row["data_directory"]))
+                grant = HostAccessGrant(
+                    host_id=host_id,
+                    managed_user_id=user_id,
+                    username=str(row["username"]),
+                    data_directory=row.get("data_directory"),
+                )
                 session.add(grant)
             grant.username = str(row["username"])
             grant.permission_template_id = row.get("permission_template_id")
             grant.template_snapshot = dict(row.get("template") or {})
             grant.groups_override = row.get("groups_override")
             grant.sudo_rule_override = row.get("sudo_rule_override")
-            grant.data_directory = str(row["data_directory"])
+            grant.account_origin = str(row.get("account_origin", "created"))
+            grant.remote_uid = row.get("remote_uid")
+            grant.remote_primary_group = row.get("remote_primary_group")
+            grant.remote_home = row.get("remote_home")
+            grant.data_directory = row.get("data_directory")
+            current_keys = [str(key) for key in job.user_snapshot.get("public_keys", [])]
+            current_fingerprints = [str(value) for value in job.user_snapshot.get("key_fingerprints", [])]
+            if grant.account_origin == "adopted":
+                grant.managed_public_keys = list(dict.fromkeys([*grant.managed_public_keys, *current_keys]))
+                grant.managed_key_fingerprints = list(dict.fromkeys([*grant.managed_key_fingerprints, *current_fingerprints]))
+            else:
+                grant.managed_public_keys = current_keys
+                grant.managed_key_fingerprints = current_fingerprints
             grant.state = "active"
             grant.last_success_job_id = job.id
         elif operation == "revoke":

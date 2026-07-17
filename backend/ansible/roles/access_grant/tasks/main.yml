@@ -1,7 +1,23 @@
-- name: Run controlled access provision
+- name: Run controlled access provision for a platform-created account
   ansible.builtin.include_tasks: provision.yml
-  when: access_grant_operation == "provision"
+  when:
+    - access_grant_operation == "provision"
+    - access_grant.account_origin | default('created') != 'adopted'
 
-- name: Run controlled access revoke
+- name: Run in-place access provision for an adopted account
+  ansible.builtin.include_tasks: provision_adopted.yml
+  when:
+    - access_grant_operation == "provision"
+    - access_grant.account_origin | default('created') == 'adopted'
+
+- name: Run controlled access revoke for a platform-created account
   ansible.builtin.include_tasks: revoke.yml
-  when: access_grant_operation == "revoke"
+  when:
+    - access_grant_operation == "revoke"
+    - access_grant.account_origin | default('created') != 'adopted'
+
+- name: Run in-place access revoke for an adopted account
+  ansible.builtin.include_tasks: revoke_adopted.yml
+  when:
+    - access_grant_operation == "revoke"
+    - access_grant.account_origin | default('created') == 'adopted'

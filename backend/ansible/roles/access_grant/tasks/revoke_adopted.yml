@@ -1,0 +1,57 @@
+- name: Validate adopted revoke snapshot fields
+  ansible.builtin.assert:
+    that:
+      - access_grant.username is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - access_grant.remote_uid | int >= 1000
+      - access_grant.remote_primary_group | length > 0
+      - access_grant.remote_home is match('^/.+')
+    fail_msg: "纳管账号回收快照不完整或不安全"
+
+- name: Read adopted account before revoke
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ access_grant.username }}"
+    fail_key: false
+
+- name: Read adopted account primary group before revoke
+  ansible.builtin.getent:
+    database: group
+    key: "{{ access_grant.remote_primary_group }}"
+    fail_key: false
+
+- name: Assert adopted account identity has not changed before revoke
+  ansible.builtin.assert:
+    that:
+      - access_grant.username in ansible_facts.getent_passwd
+      - ansible_facts.getent_passwd[access_grant.username][1] | int == access_grant.remote_uid | int
+      - ansible_facts.getent_passwd[access_grant.username][4] == access_grant.remote_home
+      - access_grant.remote_primary_group in ansible_facts.getent_group
+      - ansible_facts.getent_group[access_grant.remote_primary_group][1] | string == ansible_facts.getent_passwd[access_grant.username][2] | string
+    fail_msg: "已有账号的 UID、主组或 home 已变化，请重新盘点和预检"
+
+- name: Inspect adopted authorized keys before revoke
+  ansible.builtin.stat:
+    path: "{{ access_grant.remote_home }}/.ssh/authorized_keys"
+  register: adopted_authorized_keys
+
+- name: Remove only keys previously installed by this control plane
+  ansible.builtin.lineinfile:
+    path: "{{ access_grant.remote_home }}/.ssh/authorized_keys"
+    line: "{{ item }}"
+    state: absent
+  loop: "{{ access_grant.managed_public_keys | default([]) }}"
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - adopted_authorized_keys.stat.exists
+
+- name: Record adopted account key removals during preview
+  ansible.builtin.debug:
+    msg: "正式执行时将从 {{ access_grant.remote_home }}/.ssh/authorized_keys 移除 {{ access_grant.managed_public_keys | default([]) | length }} 把平台公钥"
+  when: ansible_check_mode
+
+- name: Lock adopted account without deleting files
+  ansible.builtin.user:
+    name: "{{ access_grant.username }}"
+    state: present
+    password_lock: true
