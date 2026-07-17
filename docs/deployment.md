@@ -15,8 +15,8 @@
    ```
 
 3. 将输出设置为 `ADMIN_PASSWORD_HASH`，并为 `SESSION_SECRET` 设置至少 32 字节的随机值。
-4. 启动 API：`cd backend && ../.venv/bin/alembic upgrade head && ../.venv/bin/uvicorn app.main:app --reload --port 8000`。
-5. 新开终端启动前端：`cd frontend && npm run dev -- --port 5174`，然后访问 `http://127.0.0.1:5174`。开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`。
+4. 启动 API：`cd backend && ../.venv/bin/alembic upgrade head && ../.venv/bin/uvicorn app.main:app --host 127.0.0.1 --reload --port 8003`。
+5. 新开终端启动前端：`cd frontend && npm run dev -- --port 5174`，然后访问 `http://127.0.0.1:5174`。开发服务器会把 `/api` 代理到 `http://127.0.0.1:8003`。
 
 ## 内网部署
 

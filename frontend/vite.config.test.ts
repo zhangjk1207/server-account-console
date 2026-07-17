@@ -6,5 +6,6 @@ describe("Vite local API proxy", () => {
   it("also proxies API calls while serving a production preview", () => {
     const resolved = typeof config === "function" ? config({ command:"serve", mode:"production", isSsrBuild:false, isPreview:true }) : config;
     expect(resolved.preview?.proxy?.["/api"]).toBeDefined();
+    expect(resolved.preview?.proxy?.["/api"]).toBe("http://127.0.0.1:8003");
   });
 });

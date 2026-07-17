@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const apiProxy = {
-  "/api": process.env.VITE_API_TARGET ?? "http://127.0.0.1:8000",
+  "/api": process.env.VITE_API_TARGET ?? "http://127.0.0.1:8003",
 };
 
 export default defineConfig(() => ({
