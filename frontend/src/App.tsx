@@ -49,10 +49,17 @@ export function App() {
   if (!authed) return <Login password={password} error={error} onPassword={setPassword} onLogin={async () => { try { await login(password); setAuthed(true); await load(); } catch (cause) { setError(message(cause, "登录失败")); } }} />;
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
+  const executeReadyJob = async (job: Job) => {
+    const endpoint = job.kind.startsWith("access_grant_") ? `/access-grant-jobs/${job.id}/execute` : `/jobs/${job.id}/execute`;
+    try {
+      const next = await api<Job>(endpoint, { method:"POST" });
+      setJobs((current) => current.map((item) => item.id === next.id ? next : item));
+    } catch (cause) { setError(message(cause, "执行任务失败")); }
+  };
   const content = view === "members" ? <MembersView users={users} selectedUser={selectedUser} hosts={hosts} templates={templates} onSelect={setSelectedUserId} onCreated={async (payload) => { const user = await api<User>("/users", { method:"POST", body:JSON.stringify(payload) }); await load(); setSelectedUserId(user.id); }} onError={setError} onJob={(job) => { setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]); }} />
     : view === "machines" ? <MachinesView hosts={hosts} onError={setError} onChanged={load} />
     : view === "templates" ? <TemplatesView templates={templates} onChanged={load} onError={setError} />
-    : <JobsView jobs={jobs} />;
+    : <JobsView jobs={jobs} onExecute={executeReadyJob} />;
 
   return <div className="shell"><aside className="sidebar"><div className="brand"><KeyRound size={19}/><span>TRAIN/ACCESS</span></div><nav>{nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={view === item.id ? "nav-item current" : "nav-item"} onClick={() => setView(item.id)}><Icon size={17}/>{item.label}</button>; })}</nav><div className="sidebar-foot"><span className="pulse"/>内网控制面</div></aside><main className="workspace"><header className="topbar"><div><p className="eyebrow">ACCESS CONTROL / INTERNAL</p><h1>{nav.find((item) => item.id === view)?.label}</h1></div><Button className="icon-button" title="刷新数据" onClick={() => void load()}><RefreshCw size={17}/></Button></header>{error && <p className="notice error">{error}</p>}{content}</main></div>;
 }
@@ -118,7 +125,11 @@ function MachineRow({ host, onChanged, onError }:{ host:Host; onChanged:()=>Prom
 
 function TemplatesView({ templates, onChanged, onError }:{ templates:PermissionTemplate[]; onChanged:()=>Promise<void>; onError:(value:string)=>void }) { const [name, setName] = useState(""); const [groups, setGroups] = useState(""); const [sudo, setSudo] = useState(""); return <><section className="template-grid">{templates.map((template) => <article key={template.id}><span className="section-kicker">{template.enabled ? "启用" : "停用"}</span><h2>{template.name}</h2><p>{template.description || "无说明"}</p><div>{template.groups.map((group) => <code key={group}>{group}</code>) || <span>无附加组</span>}</div><small>{template.sudo_rule || "不授予 sudo"}</small></article>)}</section><form className="template-create" onSubmit={(event) => { event.preventDefault(); void api<PermissionTemplate>("/permission-templates", { method:"POST", body:JSON.stringify({ name, groups:groups.split(",").map((value) => value.trim()).filter(Boolean), sudo_rule:sudo || null }) }).then(() => { setName(""); setGroups(""); setSudo(""); return onChanged(); }).catch((cause) => onError(message(cause, "创建权限模板失败"))); }}><span className="section-kicker">新权限模板</span><input placeholder="名称" value={name} onChange={(event) => setName(event.target.value)}/><input placeholder="附加组，以逗号分隔" value={groups} onChange={(event) => setGroups(event.target.value)}/><input placeholder="sudo 规则（可选）" value={sudo} onChange={(event) => setSudo(event.target.value)}/><Button type="submit">创建模板</Button></form></>; }
 
-function JobsView({ jobs }:{ jobs:Job[] }) { return <section className="jobs-table"><table><thead><tr><th>批次</th><th>创建时间</th><th>目标机器</th><th>状态</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.id}><td><b>{job.kind === "access_grant_provision" ? "批量开通" : job.kind === "access_grant_revoke" ? "批量回收" : job.kind}</b><small>{job.id}</small></td><td>{new Date(job.created_at).toLocaleString()}</td><td>{job.targets?.map((target) => target.host_name).join(" / ") || "-"}</td><td><State state={job.state}/></td></tr>)}</tbody></table>{!jobs.length && <EmptyState/>}</section>; }
+function JobsView({ jobs, onExecute }:{ jobs:Job[]; onExecute:(job:Job)=>Promise<void> }) {
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
+  const command = (job:Job) => job.kind === "access_grant_provision" ? "确认并开通" : job.kind === "access_grant_revoke" ? "确认并回收" : "确认并执行";
+  return <section className="jobs-table"><table><thead><tr><th>批次</th><th>创建时间</th><th>目标机器</th><th>状态</th><th>操作</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.id}><td><b>{job.kind === "access_grant_provision" ? "批量开通" : job.kind === "access_grant_revoke" ? "批量回收" : job.kind}</b><small>{job.id}</small></td><td>{new Date(job.created_at).toLocaleString()}</td><td>{job.targets?.map((target) => target.host_name).join(" / ") || "-"}</td><td><State state={job.state}/></td><td>{job.state === "ready_to_confirm" ? <div className="job-action"><label><input aria-label={`确认批次 ${job.id}`} type="checkbox" checked={Boolean(confirmed[job.id])} onChange={(event) => setConfirmed({ ...confirmed, [job.id]:event.target.checked })}/>确认变更</label><Button disabled={!confirmed[job.id]} onClick={() => void onExecute(job)}>{command(job)}</Button></div> : "-"}</td></tr>)}</tbody></table>{!jobs.length && <EmptyState/>}</section>;
+}
 
 function State({ state }:{ state:string }) { return <span className={`state state-${state}`}>{stateLabel[state] || (state === "unconfigured" ? "未配置" : state)}</span>; }
 function EmptyState() { return <div className="empty-state"><CheckCircle2 size={20}/><p>选择成员后即可管理 SSH 公钥和机器权限。</p></div>; }

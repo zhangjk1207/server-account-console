@@ -7,6 +7,7 @@ import { api } from "./api";
 vi.mock("./api", () => ({ api: vi.fn(), login: vi.fn() }));
 const mockedApi = vi.mocked(api);
 let previewState = "ready_to_confirm";
+let listedJobs: Array<Record<string, unknown>> = [];
 
 describe("member provisioning workbench", () => {
   afterEach(cleanup);
@@ -14,13 +15,14 @@ describe("member provisioning workbench", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     previewState = "ready_to_confirm";
+    listedJobs = [];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     mockedApi.mockImplementation((path: string, init?: RequestInit) => {
       if (path === "/hosts") return Promise.resolve([{ id: "host-1", name: "gpu-a100-01", address: "192.0.2.10", port: 22, ssh_user: "ops", tags: ["a100"], data_root: "/mnt/train", status: "reachable" }]);
       if (path === "/users") return Promise.resolve([{ id: "user-1", username: "alice", display_name: "Alice", shell: "/bin/bash", home: "/home/alice", enabled: true }]);
       if (path === "/permission-templates") return Promise.resolve([{ id: "tpl-1", name: "Docker training", description: "", groups: ["docker"], sudo_rule: null, enabled: true }]);
       if (path === "/hosts/host-1/credentials" && init?.method === "PUT") return Promise.resolve({ private_key_configured:true, sudo_password_configured:true, ssh_verified:null, sudo_verified:null, verified_at:null, last_error:null });
-      if (path === "/jobs") return Promise.resolve([]);
+      if (path === "/jobs") return Promise.resolve(listedJobs);
       if (path === "/users/user-1/keys") return Promise.resolve([{ id: "key-1", managed_user_id: "user-1", public_key: "ssh-ed25519 AAAA test", fingerprint: "SHA256:key", comment: "alice", enabled: true }]);
       if (path === "/users/user-1/access-grants") return Promise.resolve([]);
       if (path === "/users/user-1/access-grants/preview") return Promise.resolve({ id: "job-1", state: previewState, kind: "access_grant_provision", created_at: "2026-07-16T00:00:00Z", request_snapshot: { grants: [] }, targets: [] });
@@ -80,5 +82,16 @@ describe("member provisioning workbench", () => {
       expect(call?.[1]?.body).toBeInstanceOf(FormData);
       expect((call?.[1]?.body as FormData).get("private_key_file")).toBe(privateKey);
     });
+  });
+
+  it("offers persistent confirmation for a ready access batch in execution records", async () => {
+    listedJobs = [{ id:"job-1", state:"ready_to_confirm", kind:"access_grant_provision", created_at:"2026-07-17T00:00:00Z", request_snapshot:{ grants:[] }, targets:[{ host_id:"host-1", host_name:"gpu-a100-01", state:"succeeded", output:"", error:null, started_at:null, finished_at:null }] }];
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name:"执行记录" }));
+    const execute = await screen.findByRole("button", { name:"确认并开通" });
+    expect((execute as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("确认批次 job-1"));
+    fireEvent.click(execute);
+    await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/access-grant-jobs/job-1/execute", expect.objectContaining({ method:"POST" })));
   });
 });
