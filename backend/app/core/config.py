@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:////var/lib/server-account-console/app.db"
     app_origin: str = "http://127.0.0.1:5174"
     credential_encryption_key: str | None = None
+    agent_runtime_token: str | None = None
     host_probe_interval_seconds: int = 300
     backup_interval_seconds: int = 86400
 

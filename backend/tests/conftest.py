@@ -8,6 +8,7 @@ os.environ.setdefault("ADMIN_PASSWORD_HASH", bcrypt.hashpw(b"correct-horse", bcr
 os.environ.setdefault("SESSION_SECRET", "test-session-secret-that-is-long-enough")
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+os.environ.setdefault("AGENT_RUNTIME_TOKEN", "test-agent-runtime-token")
 
 
 @pytest.fixture(autouse=True)

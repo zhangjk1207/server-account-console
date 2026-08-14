@@ -5,12 +5,18 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
-
-import ansible_runner
+from typing import Any, Callable
 
 
 PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*", re.DOTALL)
+
+
+def _load_ansible_runner() -> Any:
+    try:
+        import ansible_runner
+    except (ImportError, ModuleNotFoundError) as error:
+        raise RuntimeError("Ansible execution requires the Linux runtime or container deployment") from error
+    return ansible_runner
 
 
 @dataclass(frozen=True)
@@ -35,7 +41,8 @@ class RunnerResult:
 def redact_event(event: dict, key_path: Path, *, sensitive_values: list[str] | tuple[str, ...] = ()) -> dict:
     def redact(value, path: tuple[str, ...] = (), redact_sensitive: bool = True):
         if isinstance(value, str):
-            value = value.replace(str(key_path), "[REDACTED_KEY_PATH]")
+            for rendered_path in {str(key_path), key_path.as_posix()}:
+                value = value.replace(rendered_path, "[REDACTED_KEY_PATH]")
             if redact_sensitive:
                 for secret in sensitive_values:
                     if secret:
@@ -81,7 +88,7 @@ def run_playbook(request: RunnerRequest, on_event: Callable[[dict], None], key_p
         on_event(safe_event)
         return True
 
-    result = ansible_runner.run(
+    result = _load_ansible_runner().run(
         private_data_dir=str(request.private_data_dir),
         playbook=request.playbook,
         inventory=request.inventory,

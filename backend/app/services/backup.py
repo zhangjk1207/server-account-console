@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,8 +11,9 @@ def utc_now() -> datetime:
 def create_backup(database: Path, backup_dir: Path, now: datetime) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     destination = backup_dir / f"backup-{now.strftime('%Y%m%d-%H%M%S')}.db"
-    with sqlite3.connect(database) as source, sqlite3.connect(destination) as target:
-        source.backup(target)
+    with closing(sqlite3.connect(database)) as source, closing(sqlite3.connect(destination)) as target:
+        with target:
+            source.backup(target)
     return destination
 
 

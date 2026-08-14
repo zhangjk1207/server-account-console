@@ -51,6 +51,17 @@ class HostCredential(TimestampedRecord, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AgentModelConfig(TimestampedRecord, Base):
+    __tablename__ = "agent_model_configs"
+
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(160))
+    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    api_key_ciphertext: Mapped[str] = mapped_column(Text)
+    thinking_level: Mapped[str] = mapped_column(String(16), default="medium")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class ManagedUser(TimestampedRecord, Base):
     __tablename__ = "managed_users"
 

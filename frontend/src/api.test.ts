@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, formatApiDetail } from "./api";
 
 describe("api", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -18,5 +18,10 @@ describe("api", () => {
 
     expect(fetch.mock.calls[1][1].headers).not.toHaveProperty("Content-Type");
     expect(fetch.mock.calls[1][1].body).toBe(form);
+  });
+
+  it("formats FastAPI validation arrays as readable field errors", () => {
+    expect(formatApiDetail([{ type:"string_pattern_mismatch", loc:["body", "name"], msg:"String should match pattern" }]))
+      .toBe("机器标识只能使用英文字母、数字、点、下划线和连字符");
   });
 });

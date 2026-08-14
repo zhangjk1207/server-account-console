@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -59,6 +60,7 @@ def private_key_file(private_key: str, directory: Path | None = None) -> Iterato
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(private_key)
+        _restrict_file_permissions(path)
         yield path
     finally:
         path.unlink(missing_ok=True)
@@ -75,6 +77,22 @@ def known_hosts_file(line: str) -> Iterator[Path]:
         yield path
     finally:
         path.unlink(missing_ok=True)
+
+
+def _restrict_file_permissions(path: Path) -> None:
+    """Ensure the given file is only readable/editable by the current user.
+
+    On POSIX systems a plain ``chmod 0o600`` is enough. On Windows, OpenSSH
+    assesses access based on the NTFS ACL, which ``os.fchmod`` does not
+    restrict: a temp directory's inherited ACL can leave the file accessible
+    to other users, causing ``ssh`` to reject it as an ``UNPROTECTED PRIVATE
+    KEY FILE``. We therefore re-run the Windows ACL to remove inherited rules
+    and keep only the file owner.
+    """
+    if os.name != "nt":
+        return
+    cmd = ["icacls", str(path), "/inheritance:r", "/grant:r", "*S-1-3-0:F"]
+    subprocess.run(cmd, check=False, capture_output=True)
 
 
 def _strict_ssh_command(host: Host, key_path: Path, known_hosts: Path, remote_command: str) -> list[str]:

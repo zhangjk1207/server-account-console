@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from app.services.backup import backup_sqlite_url, create_backup, remove_expired_backups, utc_now
 
 
@@ -19,6 +21,8 @@ def test_backup_removes_files_older_than_14_days(tmp_path) -> None:
 
 
 def test_backup_script_creates_a_sqlite_backup(tmp_path) -> None:
+    if os.name == "nt":
+        pytest.skip("The deployment backup entrypoint is a POSIX shell script")
     database = tmp_path / "source.db"
     with sqlite3.connect(database) as connection:
         connection.execute("create table checks (id integer primary key)")

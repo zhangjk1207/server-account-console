@@ -2,6 +2,8 @@ from pathlib import Path
 import json
 import os
 
+import pytest
+
 from app.services import runner
 from app.services.runner import RunnerRequest, redact_event, run_playbook
 
@@ -40,6 +42,8 @@ def test_redacts_configured_sensitive_values_recursively() -> None:
 
 
 def test_runner_uses_the_current_python_environment_for_ansible(monkeypatch, tmp_path) -> None:
+    if os.name == "nt":
+        pytest.skip("This test verifies the Linux virtualenv symlink layout")
     captured: dict = {}
     ansible_bin = tmp_path / "venv-bin"
     ansible_bin.mkdir()
@@ -59,7 +63,10 @@ def test_runner_uses_the_current_python_environment_for_ansible(monkeypatch, tmp
         captured.update(kwargs)
         return Result()
 
-    monkeypatch.setattr(runner.ansible_runner, "run", fake_run)
+    class FakeAnsibleRunner:
+        run = staticmethod(fake_run)
+
+    monkeypatch.setattr(runner, "_load_ansible_runner", lambda: FakeAnsibleRunner)
 
     run_playbook(
         RunnerRequest(tmp_path, {}, {}, False),

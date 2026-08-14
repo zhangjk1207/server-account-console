@@ -1,7 +1,10 @@
+import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -70,17 +73,41 @@ def apply_probe_result(host: Host, result: HostProbeResult) -> None:
         host.status = "unreachable"
 
 
+def _ssh_keyscan_candidates() -> list[str]:
+    candidates: list[str] = []
+    if configured := os.environ.get("SSH_KEYSCAN_BINARY"):
+        candidates.append(configured)
+    if os.name == "nt":
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates.append(str(Path(program_files) / "Git" / "usr" / "bin" / "ssh-keyscan.exe"))
+    if discovered := shutil.which("ssh-keyscan"):
+        candidates.append(discovered)
+    candidates.append("ssh-keyscan")
+    return list(dict.fromkeys(candidates))
+
+
 def _scan_ed25519_key(host: Host) -> tuple[str | None, str | None, str | None]:
-    scan = subprocess.run(
-        ["ssh-keyscan", "-T", "5", "-p", str(host.port), "-t", "ed25519", host.address],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    line = next((entry for entry in scan.stdout.splitlines() if entry and not entry.startswith("#")), None)
+    line = None
+    errors: list[str] = []
+    for binary in _ssh_keyscan_candidates():
+        try:
+            scan = subprocess.run(
+                [binary, "-T", "5", "-p", str(host.port), "-t", "ed25519", host.address],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (FileNotFoundError, OSError) as error:
+            errors.append(str(error))
+            continue
+        line = next((entry for entry in scan.stdout.splitlines() if entry and not entry.startswith("#")), None)
+        if line:
+            break
+        if scan.stderr.strip():
+            errors.append(scan.stderr.strip())
     if not line:
-        return None, None, (scan.stderr.strip() or "未获取到 ED25519 主机密钥")
+        return None, None, (errors[-1] if errors else "No ED25519 host key was returned")
 
     fingerprint = subprocess.run(
         ["ssh-keygen", "-lf", "-", "-E", "sha256"],

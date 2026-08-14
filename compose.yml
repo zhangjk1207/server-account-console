@@ -7,15 +7,27 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
       SESSION_SECRET: ${SESSION_SECRET}
       APP_ORIGIN: ${APP_ORIGIN}
+      AGENT_RUNTIME_TOKEN: ${AGENT_RUNTIME_TOKEN}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
     volumes:
       - ./runtime:/var/lib/server-account-console
     expose:
       - "8000"
 
+  agent:
+    build: ./agent-runtime
+    depends_on:
+      - api
+    environment:
+      CONTROL_PLANE_URL: http://api:8000
+      AGENT_RUNTIME_TOKEN: ${AGENT_RUNTIME_TOKEN}
+    expose:
+      - "8010"
+
   web:
     build: ./frontend
     depends_on:
       - api
+      - agent
     ports:
       - "8080:80"
